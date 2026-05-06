@@ -75,7 +75,7 @@ class Pipeline:
                 frame = self.identity.swap(frame, pose=pose_data)
 
                 if self.lipsync is not None and audio is not None:
-                    frame = self.lipsync(frame, audio.read_chunks())
+                    frame = self.lipsync(frame, audio.read_chunks(), pose=pose_data)
 
                 if self.body is not None and pose_data is not None:
                     frame = self.body.render(frame, pose_data)

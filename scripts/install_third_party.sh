@@ -28,6 +28,8 @@ clone_if_missing https://github.com/OpenTalker/SadTalker.git          SadTalker
 clone_if_missing https://github.com/HumanAIGC/AnimateAnyone.git       AnimateAnyone
 clone_if_missing https://github.com/magic-research/magicanimate.git   magicanimate
 clone_if_missing https://github.com/KwaiVGI/LivePortrait.git          LivePortrait
+clone_if_missing https://github.com/myshell-ai/OpenVoice.git          OpenVoice
+clone_if_missing https://github.com/Ramya646/ai-avatar-generator.git  ai-avatar-generator
 
 # Optional / heavy — uncomment if you want the 3D Gaussian path.
 # clone_if_missing https://github.com/graphdeco-inria/gaussian-splatting.git gaussian-splatting

@@ -17,7 +17,9 @@ Tracks what's implemented vs. stubbed against the whitepaper phases in `README.m
 
 | Component | File | Status |
 |---|---|---|
-| Wav2Lip post-processor | `src/rtpfb/speech.py` | **Stub** (passthrough). Needs `third_party/Wav2Lip` and a windowed-audio inference loop. |
+| Wav2Lip inference (vendored) | `src/rtpfb/_vendor/wav2lip/` | Done — `audio.py`, `hparams.py`, `models/{conv,wav2lip}.py` lifted from Rudrabha/Wav2Lip with imports rewritten relative. |
+| Streaming Wav2Lip post-processor | `src/rtpfb/speech.py` | Done — buffers audio, computes mel, crops face via MediaPipe landmarks, runs the model per frame, composites the lower-half output back. Falls back to passthrough if the checkpoint is missing or no face is found. |
+| OpenVoice TTS (text-driven mode) | `src/rtpfb/tts.py` | Skeleton — wraps `third_party/OpenVoice` for voice-cloning text-to-speech. `TTSAudioSource` is a drop-in for `AudioCapture` so you can drive the avatar from typed text. Needs OpenVoice checkpoints under `models/openvoice/` and a CLI/UX wire-up. |
 
 ## Phase 3 — Pose tracking
 
