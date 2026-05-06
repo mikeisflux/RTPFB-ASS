@@ -138,6 +138,10 @@ def check_voice_in_library(name: str) -> CheckResult:
 def preflight(config: PipelineConfig) -> HealthReport:
     """Run all the checks that apply to ``config`` and return the report.
 
+    Each check is scoped to a feature flag so voice-only / mocap-only
+    configs don't fail on irrelevant resources (e.g. camera, swap model,
+    target face image).
+
     Caller decides whether to raise on failure. Use ``report.raise_if_failed()``
     to abort startup, or just log the report and continue if some checks are
     advisory (e.g. GPU on a CPU dev machine).
@@ -145,12 +149,32 @@ def preflight(config: PipelineConfig) -> HealthReport:
     report = HealthReport()
     log.info("running preflight…")
 
-    report.add(check_face_image(config.target_face_path))
-    report.add(check_swap_model(config.swap_model))
-    report.add(check_camera(config.camera_index))
+    needs_target_face = config.mode == "faceswap" or config.enable_body
+    needs_swap_model = config.mode == "faceswap"
+    needs_camera = (
+        config.enable_pose
+        or config.mode == "faceswap"
+        or config.enable_lipsync
+        or config.output_virtual_camera
+    )
+    # GPU is required for in-process voice / lipsync backends. The w-okada
+    # backend offloads inference to a separate server (its own venv +
+    # CUDA), so rtpfb itself doesn't need GPU when using it.
+    needs_gpu = (
+        config.enable_lipsync
+        or (config.enable_voice and config.voice_backend in {"knn-vc", "rvc", "auto"})
+    )
 
-    if config.enable_voice or config.enable_lipsync:
+    if needs_target_face:
+        report.add(check_face_image(config.target_face_path))
+    if needs_swap_model:
+        report.add(check_swap_model(config.swap_model))
+    if needs_camera:
+        report.add(check_camera(config.camera_index))
+
+    if needs_gpu:
         report.add(check_gpu())
+    if config.enable_voice or config.enable_lipsync:
         report.add(check_sounddevice())
 
     if config.enable_voice:
