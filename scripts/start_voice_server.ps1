@@ -151,8 +151,16 @@ if (-not (Test-PyImport $VenvPython "fairseq")) {
     Write-Host "[setup] Installing fairseq (missing from w-okada's requirements.txt)..."
     & $VenvPython -m pip install "fairseq==0.12.2" --no-deps
     if ($LASTEXITCODE -ne 0) { throw "fairseq install failed" }
-    Write-Host "[setup] Installing fairseq runtime deps..."
-    & $VenvPython -m pip install bitarray omegaconf "hydra-core>=1.0.7,<1.1" sacrebleu portalocker regex cffi
+}
+
+# fairseq's runtime deps - install separately so we can use modern versions.
+# Don't pin hydra-core<1.1: that forces omegaconf<2.1, whose wheels have
+# invalid PEP 440 metadata (PyYAML (>=5.1.*)) that pip>=24.1 rejects.
+# fairseq.checkpoint_utils works fine against modern hydra/omegaconf for
+# what w-okada actually does (loading a hubert checkpoint).
+if (-not (Test-PyImport $VenvPython "omegaconf, hydra, bitarray")) {
+    Write-Host "[setup] Installing fairseq runtime deps (modern hydra/omegaconf)..."
+    & $VenvPython -m pip install bitarray omegaconf hydra-core sacrebleu portalocker regex cffi
     if ($LASTEXITCODE -ne 0) { throw "fairseq runtime deps install failed" }
 }
 
