@@ -4,12 +4,16 @@
 #
 # Usage:  .\scripts\start_voice_server.ps1
 # Options:
-#   -Cpu       Skip CUDA wheels, install CPU-only torch (slow but works without an NVIDIA GPU)
-#   -Port N    Port to bind (default 18888)
-#   -Reinstall Force-reinstall deps even if the venv already exists
+#   -Cpu        Skip CUDA wheels, install CPU-only torch (works without NVIDIA GPU but slow)
+#   -Nightly    Install torch nightly with CUDA 12.8 wheels. Required for Blackwell GPUs
+#               (RTX 50-series / sm_120) - torch 2.0.1's pinned cu118 wheels don't support sm_120.
+#               Also upgrades onnxruntime-gpu to a Blackwell-compatible version.
+#   -Port N     Port to bind (default 18888)
+#   -Reinstall  Force-reinstall deps even if the venv already exists
 
 param(
     [switch]$Cpu,
+    [switch]$Nightly,
     [int]$Port = 18888,
     [switch]$Reinstall
 )
@@ -25,6 +29,9 @@ $ServerEntry   = Join-Path $ServerDir "MMVCServerSIO.py"
 
 if (-not (Test-Path $ServerEntry)) {
     throw "voice-changer server not found at $ServerDir. Run scripts\install_third_party.ps1 first."
+}
+if ($Cpu -and $Nightly) {
+    throw "-Cpu and -Nightly are mutually exclusive."
 }
 
 # --- venv ------------------------------------------------------------------
@@ -44,33 +51,79 @@ if (-not (Test-Path $VenvPython)) {
     $NeedsInstall = ($LASTEXITCODE -ne 0)
 }
 
+# In -Nightly mode, also force a torch upgrade if the installed torch is the
+# old cu118 build that doesn't support Blackwell.
+$NeedsTorchUpgrade = $false
+if (-not $NeedsInstall -and $Nightly) {
+    $TorchInfo = & $VenvPython -c "import torch; print(torch.__version__)" 2>$null
+    if ($TorchInfo -like "2.0.1*" -or $TorchInfo -like "*+cu118*") {
+        Write-Host "[setup] -Nightly requested but venv has $TorchInfo - upgrading torch."
+        $NeedsTorchUpgrade = $true
+    }
+}
+
 # --- deps ------------------------------------------------------------------
 if ($NeedsInstall) {
     Write-Host "[setup] Upgrading pip..."
     & $VenvPython -m pip install --upgrade pip --quiet
 
-    if ($Cpu) {
+    if ($Nightly) {
+        # Install everything from requirements.txt EXCEPT torch / torchaudio /
+        # onnxruntime-gpu (we want newer versions of those for Blackwell).
+        $FilteredReqs = Join-Path $env:TEMP "wokada_requirements_no_torch.txt"
+        Get-Content $Requirements | Where-Object {
+            $_ -notmatch '^\s*(torch|torchaudio|onnxruntime-gpu)\s*=='
+        } | Out-File $FilteredReqs -Encoding utf8
+
+        Write-Host "[setup] Installing non-torch requirements..."
+        & $VenvPython -m pip install -r $FilteredReqs
+        if ($LASTEXITCODE -ne 0) { throw "requirements install failed" }
+
+        Write-Host "[setup] Installing torch nightly (CUDA 12.8, sm_120 / Blackwell support)..."
+        & $VenvPython -m pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+        if ($LASTEXITCODE -ne 0) { throw "torch nightly install failed" }
+
+        Write-Host "[setup] Installing latest onnxruntime-gpu (CUDA 12.x, Blackwell-compatible)..."
+        & $VenvPython -m pip install --upgrade onnxruntime-gpu
+        if ($LASTEXITCODE -ne 0) { throw "onnxruntime-gpu upgrade failed" }
+    }
+    elseif ($Cpu) {
         Write-Host "[setup] Installing torch 2.0.1 (CPU)..."
         & $VenvPython -m pip install torch==2.0.1 torchaudio==2.0.2
-    } else {
+        if ($LASTEXITCODE -ne 0) { throw "torch install failed" }
+        Write-Host "[setup] Installing the rest of requirements.txt..."
+        & $VenvPython -m pip install -r $Requirements
+        if ($LASTEXITCODE -ne 0) { throw "requirements install failed" }
+    }
+    else {
         Write-Host "[setup] Installing torch 2.0.1 + torchaudio 2.0.2 (CUDA 11.8 wheels)..."
+        Write-Host "[setup] NOTE: if you have an RTX 50-series (Blackwell, sm_120) GPU, this will not"
+        Write-Host "[setup]       use the GPU. Re-run with -Nightly -Reinstall to fix."
         & $VenvPython -m pip install torch==2.0.1 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[setup] CUDA wheels failed, falling back to CPU wheels..."
             & $VenvPython -m pip install torch==2.0.1 torchaudio==2.0.2
+            if ($LASTEXITCODE -ne 0) { throw "torch install failed" }
+        }
+        Write-Host "[setup] Installing the rest of requirements.txt..."
+        & $VenvPython -m pip install -r $Requirements
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[setup] requirements install failed - usually onnxruntime-gpu pinning to old CUDA."
+            Write-Host "[setup] Retrying with onnxruntime (CPU) instead of onnxruntime-gpu..."
+            & $VenvPython -m pip install onnxruntime==1.13.1
+            & $VenvPython -m pip install -r $Requirements --no-deps
+            if ($LASTEXITCODE -ne 0) { throw "requirements install failed" }
         }
     }
-    if ($LASTEXITCODE -ne 0) { throw "torch install failed" }
-
-    Write-Host "[setup] Installing the rest of requirements.txt..."
-    & $VenvPython -m pip install -r $Requirements
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[setup] requirements install failed - this is usually onnxruntime-gpu pinning to an old CUDA."
-        Write-Host "[setup] Retrying with onnxruntime (CPU) instead of onnxruntime-gpu..."
-        & $VenvPython -m pip install onnxruntime==1.13.1
-        & $VenvPython -m pip install -r $Requirements --no-deps
-        if ($LASTEXITCODE -ne 0) { throw "requirements install failed" }
-    }
+}
+elseif ($NeedsTorchUpgrade) {
+    Write-Host "[setup] Upgrading torch to nightly cu128 in existing venv..."
+    & $VenvPython -m pip uninstall -y torch torchaudio
+    & $VenvPython -m pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+    if ($LASTEXITCODE -ne 0) { throw "torch nightly install failed" }
+    Write-Host "[setup] Upgrading onnxruntime-gpu to latest (Blackwell-compatible)..."
+    & $VenvPython -m pip install --upgrade onnxruntime-gpu
+    if ($LASTEXITCODE -ne 0) { throw "onnxruntime-gpu upgrade failed" }
 }
 
 # --- sanity ----------------------------------------------------------------
@@ -78,10 +131,17 @@ if ($NeedsInstall) {
 import torch, fastapi, faiss, librosa
 try:
     import onnxruntime
-    rt = 'onnxruntime ' + onnxruntime.__version__
+    rt = f'onnxruntime {onnxruntime.__version__}'
 except ImportError:
     rt = 'onnxruntime missing'
-print(f'[ok] torch={torch.__version__} cuda_available={torch.cuda.is_available()} {rt}')
+cap = ''
+if torch.cuda.is_available():
+    try:
+        major, minor = torch.cuda.get_device_capability(0)
+        cap = f' sm_{major}{minor}'
+    except Exception:
+        pass
+print(f'[ok] torch={torch.__version__} cuda_available={torch.cuda.is_available()}{cap} {rt}')
 "@
 if ($LASTEXITCODE -ne 0) { throw "dep sanity check failed - try -Reinstall" }
 
@@ -95,6 +155,10 @@ Write-Host ""
 Write-Host "  Once the UI loads, point a slot at:"
 Write-Host "    voices\egirl\rvc\model.pth"
 Write-Host "    voices\egirl\rvc\added.index"
+Write-Host ""
+Write-Host "  Note: '[Voice Changer] Client Launch Exception, [WinError 2]'"
+Write-Host "  is harmless - it's w-okada looking for its Electron desktop"
+Write-Host "  client which we don't ship. Use the browser UI."
 Write-Host "================================================================"
 Write-Host ""
 
