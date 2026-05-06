@@ -126,9 +126,25 @@ elseif ($NeedsTorchUpgrade) {
     if ($LASTEXITCODE -ne 0) { throw "onnxruntime-gpu upgrade failed" }
 }
 
+# --- fairseq (idempotent) --------------------------------------------------
+# w-okada's RVC code imports fairseq.checkpoint_utils to load the hubert /
+# contentvec audio embedder, but fairseq is NOT in their requirements.txt.
+# Install with --no-deps because fairseq pins torch<2 and we'd otherwise lose
+# our nightly cu128 install. Then install fairseq's actual runtime Python
+# deps separately (minus torch/torchaudio which we manage).
+& $VenvPython -c "import fairseq" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[setup] Installing fairseq (missing from w-okada's requirements.txt)..."
+    & $VenvPython -m pip install "fairseq==0.12.2" --no-deps
+    if ($LASTEXITCODE -ne 0) { throw "fairseq install failed" }
+    Write-Host "[setup] Installing fairseq runtime deps..."
+    & $VenvPython -m pip install bitarray omegaconf "hydra-core>=1.0.7,<1.1" sacrebleu portalocker regex cffi
+    if ($LASTEXITCODE -ne 0) { throw "fairseq runtime deps install failed" }
+}
+
 # --- sanity ----------------------------------------------------------------
 & $VenvPython -c @"
-import torch, fastapi, faiss, librosa
+import torch, fastapi, faiss, librosa, fairseq
 try:
     import onnxruntime
     rt = f'onnxruntime {onnxruntime.__version__}'
@@ -141,7 +157,7 @@ if torch.cuda.is_available():
         cap = f' sm_{major}{minor}'
     except Exception:
         pass
-print(f'[ok] torch={torch.__version__} cuda_available={torch.cuda.is_available()}{cap} {rt}')
+print(f'[ok] torch={torch.__version__} cuda_available={torch.cuda.is_available()}{cap} {rt} fairseq={fairseq.__version__}')
 "@
 if ($LASTEXITCODE -ne 0) { throw "dep sanity check failed - try -Reinstall" }
 
