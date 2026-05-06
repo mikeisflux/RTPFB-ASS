@@ -172,6 +172,31 @@ if (-not (Test-PyImport $VenvPython "pyworld")) {
     if ($LASTEXITCODE -ne 0) { throw "pyworld install failed" }
 }
 
+# torch 2.6 changed torch.load to default weights_only=True for security.
+# That rejects fairseq's hubert checkpoints (they pickle a Dictionary object).
+# fairseq doesn't pass weights_only=False, and we can't easily monkey-patch
+# every call site. Drop a sitecustomize.py in the venv that flips the default
+# back globally for any Python process using this venv. Safe in this context
+# because the user fully controls what gets loaded.
+$SiteCustomize = Join-Path $VenvDir "Lib\site-packages\sitecustomize.py"
+$SiteCustomizeContent = @'
+# Auto-loaded by Python at interpreter startup. Flips torch.load's default
+# weights_only back to False so fairseq / w-okada can load checkpoints
+# containing pickled Dictionary / Namespace / DictConfig objects without
+# explicitly opting in at every call site.
+try:
+    import torch
+    _orig_torch_load = torch.load
+    def _torch_load_compat(*args, **kwargs):
+        if 'weights_only' not in kwargs:
+            kwargs['weights_only'] = False
+        return _orig_torch_load(*args, **kwargs)
+    torch.load = _torch_load_compat
+except ImportError:
+    pass
+'@
+Set-Content -Path $SiteCustomize -Value $SiteCustomizeContent -Encoding utf8
+
 # --- sanity ----------------------------------------------------------------
 & $VenvPython -c @"
 import torch, fastapi, faiss, librosa, fairseq, pyworld
