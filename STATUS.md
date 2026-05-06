@@ -12,12 +12,14 @@ rendering + soft-body physics + final video output.
 | Component | File | Status |
 |---|---|---|
 | Body / face / hand mocap | `src/rtpfb/pose.py` | Done — MediaPipe Holistic |
-| VMC protocol output (OSC/UDP) | `src/rtpfb/vmc.py` | Done — root + bones (positions) + face blendshapes (jawOpen / eyeBlink). |
+| Quaternion math util | `src/rtpfb/_math.py` | Done — quat_from_two_vectors / quat_from_basis / quat_mul / quat_rotate. 12 unit tests. |
+| VMC protocol output (OSC/UDP) | `src/rtpfb/vmc.py` | Done — root + 22 body bones + 30 finger bones, all with computed rotations. ARKit blendshapes (52 from Face Landmarker v2 if available, 3 synthesised fallback). |
+| Body bone rotations | `src/rtpfb/vmc.py::_compute_body_transforms` | Done — world-space rotations from rest direction → live direction per bone. Spine derived from hip↔shoulder axis; head from ear-line + nose; arms / legs per segment. |
+| Hand finger tracking | `src/rtpfb/vmc.py::_compute_finger_transforms` | Done — 5 fingers × 3 phalanges × 2 hands = 30 bones, each with computed rotation. |
+| Face Landmarker v2 (52 ARKit blendshapes) | `src/rtpfb/pose.py::FaceBlendshapeExtractor` | Done — wraps MediaPipe `tasks.vision.FaceLandmarker`. Pipeline auto-detects, falls back to synthesised 3-blendshape set if the `.task` file isn't present. `scripts/download_models.sh` auto-fetches it (Apache-2.0). |
 | Mocap-mode pipeline orchestration | `src/rtpfb/pipeline.py` | Done — `mode="mocap"` skips face-swap/Wav2Lip and ships pose data. |
 | Unreal + MetaHuman setup | `UNREAL.md` | Done — full setup walkthrough. EVMC4U plugin handles VMC → MetaHuman skeleton mapping. |
-| Bone rotations | — | TODO — currently identity quaternions; renderer IK solves. Add per-bone parent→child rotation derivation for tighter tracking. |
-| Hand finger tracking | — | TODO — wire MediaPipe hand landmarks into VMC finger bones. |
-| Real Face Landmarker v2 blendshapes | — | TODO — replace the synthesised 3-blendshape set with all 52 ARKit blendshapes via `mediapipe.tasks.vision.FaceLandmarker`. |
+| Live Face Landmarker as a separate frame | — | Future — currently the v2 task runs synchronously per frame on the same RGB buffer. If FPS suffers, move to async with the LIVE_STREAM running mode. |
 
 ## Mode: faceswap (legacy 2D path)
 

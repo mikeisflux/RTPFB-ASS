@@ -40,6 +40,7 @@ class PipelineConfig:
     vmc_host: str = "127.0.0.1"
     vmc_port: int = 39539
     vmc_face_blendshapes: bool = True
+    face_landmarker_model: str = "face_landmarker.task"
 
     audio_samplerate: int = 16000
     audio_channels: int = 1

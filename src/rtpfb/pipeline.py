@@ -99,9 +99,23 @@ class Pipeline:
             self.audio = None
 
     def _init_mocap_stages(self, config: PipelineConfig) -> None:
+        from .config import MODELS_DIR
         from .vmc import VMCSender
 
         self.vmc = VMCSender(host=config.vmc_host, port=config.vmc_port)
+        self.face_blendshapes = None
+        if config.vmc_face_blendshapes:
+            try:
+                from .pose import FaceBlendshapeExtractor
+
+                self.face_blendshapes = FaceBlendshapeExtractor(
+                    model_path=MODELS_DIR / config.face_landmarker_model
+                )
+            except Exception as exc:  # noqa: BLE001 — fall back to synthesised blendshapes
+                log.warning(
+                    "Face Landmarker v2 unavailable (%s); falling back to "
+                    "synthesised jawOpen/eyeBlink only.", exc
+                )
         self.identity = None
         self.lipsync = None
         self.body = None
@@ -176,9 +190,16 @@ class Pipeline:
         if self.vmc is not None and pose_data is not None:
             blendshapes = None
             if self.config.vmc_face_blendshapes:
-                from .vmc import blendshapes_from_face_landmarks
+                if self.face_blendshapes is not None:
+                    try:
+                        blendshapes = self.face_blendshapes.extract(frame)
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug("Face Landmarker extract failed: %s", exc)
+                        blendshapes = None
+                if not blendshapes:
+                    from .vmc import blendshapes_from_face_landmarks
 
-                blendshapes = blendshapes_from_face_landmarks(pose_data.face_landmarks)
+                    blendshapes = blendshapes_from_face_landmarks(pose_data.face_landmarks)
             self.vmc.send(pose_data, blendshapes=blendshapes)
         # In mocap mode the local frame is just used for HUD / preview.
         return frame

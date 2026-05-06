@@ -164,4 +164,16 @@ def preflight(config: PipelineConfig) -> HealthReport:
     if config.output_virtual_camera:
         report.add(check_pyvirtualcam())
 
+    if config.mode == "mocap" and config.vmc_face_blendshapes:
+        face_model = MODELS_DIR / config.face_landmarker_model
+        report.add(
+            CheckResult(
+                f"face-landmarker[{config.face_landmarker_model}]",
+                face_model.exists(),
+                str(face_model)
+                if face_model.exists()
+                else f"missing at {face_model}; will fall back to synthesised blendshapes",
+            )
+        )
+
     return report
