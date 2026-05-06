@@ -1,4 +1,4 @@
-# PowerShell equivalent of install_third_party.sh — for Windows users without
+# PowerShell equivalent of install_third_party.sh -- for Windows users without
 # WSL or Git Bash on PATH. Clones every upstream repo we integrate with into
 # ./third_party/ (gitignored). See THIRD_PARTY.md for license notes.
 #
@@ -42,4 +42,4 @@ Clone-IfMissing "https://github.com/bshall/knn-vc.git"                          
 
 Write-Host ""
 Write-Host "Done. Upstream repos are in $Dest"
-Write-Host "Each retains its own license — see THIRD_PARTY.md."
+Write-Host "Each retains its own license -- see THIRD_PARTY.md."
