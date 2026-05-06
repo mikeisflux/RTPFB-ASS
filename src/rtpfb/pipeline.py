@@ -7,20 +7,25 @@ from typing import Iterator
 import numpy as np
 
 from .body import BodyRenderer
-from .capture import AudioCapture, WebcamCapture
+from .capture import AudioCapture, RealTimeAudioStream, WebcamCapture
 from .config import PipelineConfig
 from .identity import FaceSwapper
 from .output import VirtualCameraOutput
 from .pose import PoseTracker
 from .speech import Wav2LipCorrector
 from .stabilize import TemporalStabilizer
+from .voice import StreamingVoiceChanger
 
 
 class Pipeline:
     """End-to-end orchestrator.
 
-    Stages (toggled via PipelineConfig):
-        capture -> pose -> identity-swap -> [lipsync] -> [body] -> stabilize -> output
+    Video stages (toggled via PipelineConfig):
+        capture -> pose -> identity-swap -> [lipsync] -> [body] -> stabilize -> camera-out
+
+    Audio stages (when enable_voice):
+        mic -> voice-changer -> virtual-mic-out
+                            \\-> lipsync queue (drives Wav2Lip)
     """
 
     def __init__(self, config: PipelineConfig):
@@ -32,15 +37,42 @@ class Pipeline:
             height=config.height,
             fps=config.fps,
         )
-        self.audio = (
-            AudioCapture(
+
+        # Voice changer + audio plumbing.
+        self.voice = (
+            StreamingVoiceChanger(
+                voice_model=config.voice_model,
+                backend=config.voice_backend,
+                sample_rate=config.audio_samplerate,
+                chunk_samples=config.audio_blocksize,
+                crossfade_samples=config.voice_crossfade_samples,
+                ws_url=config.voice_ws_url,
+                pitch_shift_semitones=config.voice_pitch_shift,
+            )
+            if config.enable_voice
+            else None
+        )
+
+        # Pick the audio source. RealTimeAudioStream runs voice conversion +
+        # virtual-mic output in the audio thread for low-latency. Plain
+        # AudioCapture is mic-only (used when only Wav2Lip needs audio).
+        if config.enable_voice or config.output_virtual_mic:
+            self.audio = RealTimeAudioStream(
+                voice_changer=self.voice,
+                samplerate=config.audio_samplerate,
+                channels=config.audio_channels,
+                blocksize=config.audio_blocksize,
+                output_device=config.virtual_mic_device,
+            )
+        elif config.enable_lipsync:
+            self.audio = AudioCapture(
                 samplerate=config.audio_samplerate,
                 channels=config.audio_channels,
                 blocksize=config.audio_blocksize,
             )
-            if config.enable_lipsync
-            else None
-        )
+        else:
+            self.audio = None
+
         self.pose = PoseTracker() if config.enable_pose else None
         self.identity = FaceSwapper(config.target_face_path, config.swap_model)
         self.lipsync = Wav2LipCorrector() if config.enable_lipsync else None
@@ -62,7 +94,7 @@ class Pipeline:
         with ExitStack() as stack:
             cap = stack.enter_context(self.capture)
             audio = stack.enter_context(self.audio) if self.audio is not None else None
-            out = stack.enter_context(self.output) if self.output is not None else None
+            cam_out = stack.enter_context(self.output) if self.output is not None else None
 
             t0 = time.time()
             n = 0
@@ -83,8 +115,8 @@ class Pipeline:
                 if self.stabilizer is not None:
                     frame = self.stabilizer.smooth(frame)
 
-                if out is not None:
-                    out.send(frame)
+                if cam_out is not None:
+                    cam_out.send(frame)
 
                 yield frame
 
@@ -92,3 +124,6 @@ class Pipeline:
                 if n % 60 == 0:
                     dt = time.time() - t0
                     print(f"[rtpfb] {n} frames, {n / dt:.1f} fps", flush=True)
+
+        if self.voice is not None:
+            self.voice.close()

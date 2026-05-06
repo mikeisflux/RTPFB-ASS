@@ -24,9 +24,9 @@ env/
 
 # Project artifacts (cloned upstream + downloaded weights are heavy and
 # usually license-restricted — keep them out of git)
-third_party/
-models/
-assets/local/
+/third_party/
+/models/
+/assets/local/
 *.onnx
 *.pth
 *.safetensors

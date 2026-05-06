@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import queue
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
@@ -76,6 +76,80 @@ class AudioCapture:
         if not chunks:
             return np.zeros((0, self.channels), dtype=np.float32)
         return np.concatenate(chunks, axis=0)
+
+    def __exit__(self, *exc) -> None:
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+
+
+class RealTimeAudioStream:
+    """Callback-driven mic-in → voice-converter → virtual-mic-out bridge.
+
+    Runs the voice conversion in sounddevice's audio thread so the converted
+    audio reaches the virtual mic with only blocksize-worth of buffering
+    (≈16ms at 256/16kHz). A copy of every converted chunk is also pushed onto
+    a queue for the video pipeline to consume (so Wav2Lip syncs lips to the
+    *output* voice, not the source voice).
+    """
+
+    def __init__(
+        self,
+        voice_changer=None,
+        *,
+        samplerate: int = 16000,
+        channels: int = 1,
+        blocksize: int = 256,
+        output_device: Optional[str | int] = None,
+    ):
+        self._voice = voice_changer
+        self.samplerate = samplerate
+        self.channels = channels
+        self.blocksize = blocksize
+        self._output_device = output_device
+        self._queue: queue.Queue[np.ndarray] = queue.Queue()
+        self._stream = None
+
+    def __enter__(self) -> "RealTimeAudioStream":
+        import sounddevice as sd
+
+        def _callback(indata, outdata, frames, time_info, status):
+            mono = indata[:, 0].astype(np.float32, copy=True)
+            if self._voice is not None:
+                converted = self._voice.process(mono)
+            else:
+                converted = mono
+            if converted.ndim == 1:
+                outdata[:, 0] = converted
+            else:
+                outdata[:] = converted[:, : outdata.shape[1]]
+            self._queue.put(converted.copy())
+
+        self._stream = sd.Stream(
+            samplerate=self.samplerate,
+            blocksize=self.blocksize,
+            channels=(self.channels, self.channels),
+            dtype="float32",
+            callback=_callback,
+            device=(None, self._output_device),
+        )
+        self._stream.start()
+        return self
+
+    def read_chunks(self, max_chunks: int = 16) -> np.ndarray:
+        chunks: list[np.ndarray] = []
+        for _ in range(max_chunks):
+            try:
+                chunks.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        if not chunks:
+            return np.zeros((0, self.channels), dtype=np.float32)
+        out = np.concatenate(chunks)
+        if out.ndim == 1:
+            out = out[:, np.newaxis]
+        return out
 
     def __exit__(self, *exc) -> None:
         if self._stream is not None:

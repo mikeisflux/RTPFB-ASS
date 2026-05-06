@@ -28,8 +28,13 @@ clone_if_missing https://github.com/OpenTalker/SadTalker.git          SadTalker
 clone_if_missing https://github.com/HumanAIGC/AnimateAnyone.git       AnimateAnyone
 clone_if_missing https://github.com/magic-research/magicanimate.git   magicanimate
 clone_if_missing https://github.com/KwaiVGI/LivePortrait.git          LivePortrait
-clone_if_missing https://github.com/myshell-ai/OpenVoice.git          OpenVoice
-clone_if_missing https://github.com/Ramya646/ai-avatar-generator.git  ai-avatar-generator
+
+# Real-time voice conversion (target latency <=115ms). w-okada/voice-changer
+# is the production-ready streaming app (RVC / MMVC / so-vits-svc backends).
+# RVC-Project provides the underlying model + index format.
+clone_if_missing https://github.com/w-okada/voice-changer.git                                    voice-changer
+clone_if_missing https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git       RVC-WebUI
+clone_if_missing https://github.com/yxlllc/DDSP-SVC.git                                          DDSP-SVC
 
 # Optional / heavy — uncomment if you want the 3D Gaussian path.
 # clone_if_missing https://github.com/graphdeco-inria/gaussian-splatting.git gaussian-splatting

@@ -19,7 +19,13 @@ Tracks what's implemented vs. stubbed against the whitepaper phases in `README.m
 |---|---|---|
 | Wav2Lip inference (vendored) | `src/rtpfb/_vendor/wav2lip/` | Done — `audio.py`, `hparams.py`, `models/{conv,wav2lip}.py` lifted from Rudrabha/Wav2Lip with imports rewritten relative. |
 | Streaming Wav2Lip post-processor | `src/rtpfb/speech.py` | Done — buffers audio, computes mel, crops face via MediaPipe landmarks, runs the model per frame, composites the lower-half output back. Falls back to passthrough if the checkpoint is missing or no face is found. |
-| OpenVoice TTS (text-driven mode) | `src/rtpfb/tts.py` | Skeleton — wraps `third_party/OpenVoice` for voice-cloning text-to-speech. `TTSAudioSource` is a drop-in for `AudioCapture` so you can drive the avatar from typed text. Needs OpenVoice checkpoints under `models/openvoice/` and a CLI/UX wire-up. |
+## Phase 2b — Real-time voice-to-voice conversion (target ≤115ms latency)
+
+| Component | File | Status |
+|---|---|---|
+| Streaming voice changer | `src/rtpfb/voice.py` | Scaffold — RVC-style in-process inference path + a fallback that talks to a `w-okada/voice-changer` server over WebSocket. Per-frame call signature so it slots between `AudioCapture` and `Wav2LipCorrector`. |
+| Virtual microphone output | `src/rtpfb/output.py::VirtualMicOutput` | Scaffold — `sounddevice` OutputStream into a loopback device (Linux: PulseAudio null-sink; Windows: VB-Cable; macOS: BlackHole). |
+| Latency budget | — | Capture 20ms + HuBERT 10–20ms + f0 (RMVPE) 5–10ms + RVC generator 30–50ms + playback 10–20ms ≈ **75–115ms** with overlap-add windowing. |
 
 ## Phase 3 — Pose tracking
 
