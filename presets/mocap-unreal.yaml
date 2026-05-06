@@ -1,0 +1,35 @@
+# Mocap mode preset: pose → VMC → Unreal Engine 5 + MetaHuman + Chaos.
+# This is the path for full-body + soft-body physics + photoreal female avatar.
+#
+# On the Unreal side: install the EVMC4U plugin, set up a MetaHuman, point
+# this plugin at port 39539. See UNREAL.md for the full setup.
+#
+# Usage:
+#   rtpfb run --preset presets/mocap-unreal.yaml --voice-model alice
+
+mode: mocap
+
+camera_index: 0
+width: 1280
+height: 720
+fps: 30
+
+enable_pose: true
+
+vmc_host: 127.0.0.1
+vmc_port: 39539
+vmc_face_blendshapes: true
+
+enable_voice: true
+output_virtual_mic: true
+
+audio_blocksize: 256
+voice_backend: auto
+voice_pitch_shift: 0.0
+voice_crossfade_samples: 64
+
+# Faceswap stages disabled in mocap mode — Unreal renders the avatar.
+enable_lipsync: false
+enable_body: false
+enable_stabilize: false
+output_virtual_camera: false

@@ -12,7 +12,13 @@ ASSETS_DIR = REPO_ROOT / "assets"
 
 @dataclass
 class PipelineConfig:
-    target_face_path: str
+    target_face_path: str = ""
+
+    # mocap   — mediapipe pose → VMC → external 3D renderer (Unreal+MetaHuman,
+    #            Unity, VSeeFace…). Best path for full-body + physics.
+    # faceswap — legacy 2D pipeline: InsightFace face swap → virtual cam.
+    #            No body, no physics; kept for cases where 3D isn't an option.
+    mode: str = "mocap"
 
     camera_index: int = 0
     width: int = 1280
@@ -26,17 +32,21 @@ class PipelineConfig:
     enable_lipsync: bool = False
     enable_body: bool = False
     enable_stabilize: bool = True
+
     output_virtual_camera: bool = True
     output_virtual_mic: bool = False
 
+    # VMC mocap output (used in mode="mocap")
+    vmc_host: str = "127.0.0.1"
+    vmc_port: int = 39539
+    vmc_face_blendshapes: bool = True
+
     audio_samplerate: int = 16000
     audio_channels: int = 1
-    # 256 samples @ 16kHz ≈ 16ms. Budget for 115ms total: keep this small.
     audio_blocksize: int = 256
 
-    # Voice conversion
     voice_model: str = ""
-    voice_backend: str = "w-okada"  # "rvc" | "w-okada"
+    voice_backend: str = "auto"  # "auto" | "rvc" | "knn-vc" | "w-okada"
     voice_ws_url: str = "ws://localhost:18888"
     voice_pitch_shift: float = 0.0
     voice_crossfade_samples: int = 64

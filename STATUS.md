@@ -1,88 +1,90 @@
 # Build Status
 
-Tracks what's implemented vs. stubbed against the whitepaper phases in `README.md`.
+Tracks what's implemented vs. stubbed. The project has **two operating modes**;
+the recommended one is *mocap*.
 
-## Phase 1 — Face swap MVP → virtual camera
+## Mode: mocap (default — full-body + physics)
+
+Our Python pipeline does mocap + voice; an external 3D renderer (Unreal 5 +
+MetaHuman + EVMC4U recommended, or Unity / VSeeFace for VRM) does avatar
+rendering + soft-body physics + final video output.
+
+| Component | File | Status |
+|---|---|---|
+| Body / face / hand mocap | `src/rtpfb/pose.py` | Done — MediaPipe Holistic |
+| VMC protocol output (OSC/UDP) | `src/rtpfb/vmc.py` | Done — root + bones (positions) + face blendshapes (jawOpen / eyeBlink). |
+| Mocap-mode pipeline orchestration | `src/rtpfb/pipeline.py` | Done — `mode="mocap"` skips face-swap/Wav2Lip and ships pose data. |
+| Unreal + MetaHuman setup | `UNREAL.md` | Done — full setup walkthrough. EVMC4U plugin handles VMC → MetaHuman skeleton mapping. |
+| Bone rotations | — | TODO — currently identity quaternions; renderer IK solves. Add per-bone parent→child rotation derivation for tighter tracking. |
+| Hand finger tracking | — | TODO — wire MediaPipe hand landmarks into VMC finger bones. |
+| Real Face Landmarker v2 blendshapes | — | TODO — replace the synthesised 3-blendshape set with all 52 ARKit blendshapes via `mediapipe.tasks.vision.FaceLandmarker`. |
+
+## Mode: faceswap (legacy 2D path)
+
+Kept as a fallback for users who can't / won't set up Unreal. No body, no
+physics — just a 2D face swap to a virtual camera.
 
 | Component | File | Status |
 |---|---|---|
 | Webcam capture | `src/rtpfb/capture.py` | Done |
 | Audio capture | `src/rtpfb/capture.py` | Done |
-| Face swap (InsightFace inswapper) | `src/rtpfb/identity.py` | Done — needs model weights |
-| Virtual camera output | `src/rtpfb/output.py` | Done — needs OBS / v4l2loopback backend |
-| Pipeline orchestrator | `src/rtpfb/pipeline.py` | Done |
-| CLI | `src/rtpfb/cli.py` | Done |
+| Face swap (InsightFace inswapper) | `src/rtpfb/identity.py` | Done — needs `inswapper_128.onnx` |
+| Wav2Lip lip sync | `src/rtpfb/speech.py` | Done — needs `wav2lip_gan.pth` |
+| Optical-flow stabilizer | `src/rtpfb/stabilize.py` | Done |
+| Virtual camera output | `src/rtpfb/output.py::VirtualCameraOutput` | Done — pyvirtualcam |
+| Body re-render (AnimateAnyone-style) | `src/rtpfb/body.py` | Stub — will not be finished; this lives in mocap mode now. |
 
-## Phase 2 — Speech-driven lip sync
-
-| Component | File | Status |
-|---|---|---|
-| Wav2Lip inference (vendored) | `src/rtpfb/_vendor/wav2lip/` | Done — `audio.py`, `hparams.py`, `models/{conv,wav2lip}.py` lifted from Rudrabha/Wav2Lip with imports rewritten relative. |
-| Streaming Wav2Lip post-processor | `src/rtpfb/speech.py` | Done — buffers audio, computes mel, crops face via MediaPipe landmarks, runs the model per frame, composites the lower-half output back. Falls back to passthrough if the checkpoint is missing or no face is found. |
-## Phase 2b — Real-time voice-to-voice conversion (target ≤115ms latency)
+## Voice (mode-agnostic, target ≤115ms latency)
 
 | Component | File | Status |
 |---|---|---|
-| Streaming voice changer (3 backends) | `src/rtpfb/voice.py` | `knn-vc` in-process path **wired** (loads features from the voice library, streams via WavLM + HiFi-GAN); `w-okada` WebSocket path **wired** (talks to a running voice-changer server); `rvc` in-process **stub** (loader pending an RVC release pin). |
-| Realtime audio bridge | `src/rtpfb/capture.py::RealTimeAudioStream` | Done — sounddevice callback runs voice conversion in the audio thread, ~16ms buffering. |
-| Virtual microphone output | `src/rtpfb/output.py::VirtualMicOutput` | Done — sounddevice OutputStream into a loopback device (PulseAudio null-sink / VB-CABLE / BlackHole). |
-| Latency budget | — | capture 16ms + HuBERT/WavLM 10–20ms + f0 5–10ms + generator 30–50ms + output 16ms ≈ **75–115ms** with crossfade between chunks. |
+| Streaming voice changer (3 backends) | `src/rtpfb/voice.py` | knn-vc and w-okada wired; rvc loader is a stub pending RVC release pin. |
+| Voice library (clone from samples) | `src/rtpfb/voice_library.py` | Done — knn-vc embedder zero-shot; rvc training delegates to RVC-WebUI GUI. |
+| Realtime audio bridge | `src/rtpfb/capture.py::RealTimeAudioStream` | Done — sounddevice callback runs voice conversion in audio thread. |
+| Virtual mic output | `src/rtpfb/output.py::VirtualMicOutput` | Done — loopback device (PulseAudio null-sink / VB-CABLE / BlackHole). |
+| CLI | `src/rtpfb/cli.py` | Done — `rtpfb voice add/list/remove`, `--voice-model`. |
 
-## Voice library (clone a voice from samples)
+## Production foundations
 
-| Component | File | Status |
-|---|---|---|
-| File-system voice registry | `src/rtpfb/voice_library.py::VoiceLibrary` | Done — `voices/<name>/{samples,meta.json,knnvc/features.pt or rvc/}` layout. |
-| KNN-VC embedder (zero-shot) | `src/rtpfb/voice_library.py::KNNVCEmbedder` | Done — caches WavLM features from training audio. ~1–5 min of clean speech is enough. |
-| RVC trainer | `src/rtpfb/voice_library.py::RVCTrainer` | **Stub** — surfaces a clear error. Train via the RVC-WebUI GUI for now and drop the `.pth` + `.index` into `voices/<name>/rvc/`. |
-| CLI (`rtpfb voice add/list/remove`) | `src/rtpfb/cli.py` | Done — subparser-based CLI; the streamer reads `--voice-model <name>` and auto-picks the backend from `meta.json`. |
+| | Status |
+|---|---|
+| Structured logging (`_log.py`) | Done — JSON or human, RTPFB_LOG_LEVEL env |
+| Typed exception hierarchy (`errors.py`) | Done |
+| Preflight health checks (`health.py`) | Done — `rtpfb health` subcommand |
+| YAML preset loader (`preset.py`) | Done — `--preset path.yaml` |
+| HUD overlay (`hud.py`) | Done — fps + voice state on faceswap output |
+| Signal handling (graceful shutdown) | Done — SIGINT/SIGTERM trip ExitStack cleanup |
+| Tests | 38+ unit tests, no GPU/audio/camera required |
+| ruff + mypy + pytest configs | Done — all in `pyproject.toml` |
+| GitHub Actions CI | Done — lint + matrix test on Python 3.10/3.11/3.12 |
+| Pre-commit hooks | Done |
+| Dockerfile (CUDA 12 runtime) | Done |
+| Makefile | Done |
+| LICENSE (MIT) | Done |
+| Presets | `streaming-knnvc.yaml`, `voice-only.yaml`, `mocap-unreal.yaml` |
 
-## OBS streaming
-
-The pipeline already pipes to OBS via `pyvirtualcam` (video) + a sounddevice
-loopback device (audio). See **`STREAMING.md`** for the full setup steps —
-loopback audio device per OS, OBS source wiring, A/V sync offsets, and lower-latency
-NDI / direct-RTMP options for later.
-
-## Phase 3 — Pose tracking
-
-| Component | File | Status |
-|---|---|---|
-| MediaPipe Holistic wrapper | `src/rtpfb/pose.py` | Done — produces `PoseFrame` with face / body / hand landmarks |
-| Pose overlay / consumer | — | Pose is captured but downstream stages don't condition on it yet |
-
-## Phase 4 — Pose-conditioned body render
-
-| Component | File | Status |
-|---|---|---|
-| AnimateAnyone / MagicAnimate hook | `src/rtpfb/body.py` | **Stub** (passthrough). Real-time on a single 5090 is borderline — distill or skip. |
-
-## Phase 5 — Temporal stabilization
-
-| Component | File | Status |
-|---|---|---|
-| Optical-flow blender | `src/rtpfb/stabilize.py` | Done — basic Farneback + alpha blend. Sink-frame reuse not yet wired. |
-
-## Quickstart
+## Quickstart (mocap mode — recommended)
 
 ```bash
-# 1. Install Python deps
-pip install -e .
+# 1. Install
+pip install -e ".[voice,mocap,preset]"
+bash scripts/install_third_party.sh   # voice changer dependencies
 
-# 2. Pull upstream repos (DeepFaceLive, FaceFusion, Wav2Lip, AnimateAnyone, MagicAnimate)
-bash scripts/install_third_party.sh
+# 2. Clone a voice
+rtpfb voice add me --samples ~/voice_clips/
 
-# 3. Download model weights (manual — see notes inside)
-bash scripts/download_models.sh
+# 3. Open Unreal (see UNREAL.md), hit Play in your MetaHuman level so
+#    EVMC4U starts listening on :39539
 
-# 4. Run with a target face image
-rtpfb --target ./assets/target.png
+# 4. Run the mocap + voice service
+rtpfb run --preset presets/mocap-unreal.yaml --voice-model me
+
+# 5. Open OBS, add Unreal's NDI feed as video, loopback device as audio,
+#    stream to wherever.
 ```
 
-On Linux you need `v4l2loopback` for the virtual camera; on Windows the OBS virtual camera driver. See `pyvirtualcam` docs for setup.
+## Quickstart (faceswap fallback)
 
-## Known gaps
-
-- The InsightFace `inswapper_128.onnx` model is non-commercial use only. For commercial work, swap in a pipeline you have the rights to (e.g. a model you trained, or a licensed FaceFusion build).
-- The MVP face swap engine is a thin wrapper around InsightFace. Swapping in DeepFaceLive (subprocess) or FaceFusion (subprocess) is on the roadmap; the `FaceSwapper` interface is intentionally narrow so the engine is pluggable.
-- No tests yet. Adding a fixture-based test for each stage with synthetic frames is the next infra task.
+```bash
+rtpfb run --mode faceswap --target ./assets/face.png --voice --voice-model me
+```

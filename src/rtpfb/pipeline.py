@@ -7,16 +7,12 @@ from typing import Iterator
 import numpy as np
 
 from ._log import get_logger
-from .body import BodyRenderer
 from .capture import AudioCapture, RealTimeAudioStream, WebcamCapture
 from .config import PipelineConfig
+from .errors import ConfigurationError
 from .health import preflight
 from .hud import HUDState, draw_hud
-from .identity import FaceSwapper
-from .output import VirtualCameraOutput
 from .pose import PoseTracker
-from .speech import Wav2LipCorrector
-from .stabilize import TemporalStabilizer
 from .voice import StreamingVoiceChanger
 
 log = get_logger("rtpfb.pipeline")
@@ -25,12 +21,17 @@ log = get_logger("rtpfb.pipeline")
 class Pipeline:
     """End-to-end orchestrator.
 
-    Video stages (toggled via PipelineConfig):
-        capture -> pose -> identity-swap -> [lipsync] -> [body] -> stabilize -> camera-out
+    Two modes:
 
-    Audio stages (when enable_voice or enable_lipsync):
-        mic -> [voice-changer] -> [virtual-mic-out]
-                              \\-> lipsync queue (drives Wav2Lip)
+      mode="mocap"
+          Mediapipe Holistic → VMC over UDP → external 3D renderer
+          (Unreal + MetaHuman + EVMC4U, Unity VMC4U, VSeeFace…). The
+          renderer handles avatar mesh + physics + final video output;
+          we only ship pose data and converted voice audio.
+
+      mode="faceswap"
+          Legacy 2D path: capture → pose → InsightFace face swap →
+          [Wav2Lip] → stabilize → virtual camera. No body, no physics.
     """
 
     def __init__(
@@ -40,13 +41,15 @@ class Pipeline:
         run_preflight: bool = True,
         show_hud: bool = True,
     ):
+        if config.mode not in {"mocap", "faceswap"}:
+            raise ConfigurationError(f"Unknown mode {config.mode!r}; expected 'mocap' or 'faceswap'.")
+
         self.config = config
         self._stop = False
-        self._hud = HUDState() if show_hud else None
+        self._hud = HUDState() if show_hud and config.mode == "faceswap" else None
 
         if run_preflight:
-            report = preflight(config)
-            report.raise_if_failed()
+            preflight(config).raise_if_failed()
 
         self.capture = WebcamCapture(
             index=config.camera_index,
@@ -55,6 +58,15 @@ class Pipeline:
             fps=config.fps,
         )
 
+        self.pose = PoseTracker() if (config.enable_pose or config.mode == "mocap") else None
+
+        # Mode-specific stages
+        if config.mode == "mocap":
+            self._init_mocap_stages(config)
+        else:
+            self._init_faceswap_stages(config)
+
+        # Audio + voice are mode-agnostic.
         self.voice = (
             StreamingVoiceChanger(
                 voice_model=config.voice_model,
@@ -86,7 +98,24 @@ class Pipeline:
         else:
             self.audio = None
 
-        self.pose = PoseTracker() if config.enable_pose else None
+    def _init_mocap_stages(self, config: PipelineConfig) -> None:
+        from .vmc import VMCSender
+
+        self.vmc = VMCSender(host=config.vmc_host, port=config.vmc_port)
+        self.identity = None
+        self.lipsync = None
+        self.body = None
+        self.stabilizer = None
+        self.output = None  # The 3D renderer owns video output.
+
+    def _init_faceswap_stages(self, config: PipelineConfig) -> None:
+        from .body import BodyRenderer
+        from .identity import FaceSwapper
+        from .output import VirtualCameraOutput
+        from .speech import Wav2LipCorrector
+        from .stabilize import TemporalStabilizer
+
+        self.vmc = None
         self.identity = FaceSwapper(config.target_face_path, config.swap_model)
         self.lipsync = Wav2LipCorrector() if config.enable_lipsync else None
         self.body = BodyRenderer(config.target_face_path) if config.enable_body else None
@@ -107,7 +136,7 @@ class Pipeline:
             pass
 
     def iter_frames(self) -> Iterator[np.ndarray]:
-        log.info("pipeline starting")
+        log.info("pipeline starting (mode=%s)", self.config.mode)
         try:
             with ExitStack() as stack:
                 cap = stack.enter_context(self.capture)
@@ -123,25 +152,11 @@ class Pipeline:
                         break
 
                     pose_data = self.pose.process(frame) if self.pose is not None else None
-                    frame = self.identity.swap(frame, pose=pose_data)
 
-                    if self.lipsync is not None and audio is not None:
-                        frame = self.lipsync(frame, audio.read_chunks(), pose=pose_data)
-
-                    if self.body is not None and pose_data is not None:
-                        frame = self.body.render(frame, pose_data)
-
-                    if self.stabilizer is not None:
-                        frame = self.stabilizer.smooth(frame)
-
-                    if self._hud is not None:
-                        self._hud.tick()
-                        self._hud.voice_state = (
-                            f"{self.voice.backend}:{self.voice.voice_model or '-'}"
-                            if self.voice is not None
-                            else "off"
-                        )
-                        frame = draw_hud(frame, self._hud)
+                    if self.config.mode == "mocap":
+                        frame = self._step_mocap(frame, pose_data)
+                    else:
+                        frame = self._step_faceswap(frame, pose_data, audio)
 
                     if cam_out is not None:
                         cam_out.send(frame)
@@ -156,3 +171,37 @@ class Pipeline:
             if self.voice is not None:
                 self.voice.close()
             log.info("pipeline shut down")
+
+    def _step_mocap(self, frame: np.ndarray, pose_data) -> np.ndarray:
+        if self.vmc is not None and pose_data is not None:
+            blendshapes = None
+            if self.config.vmc_face_blendshapes:
+                from .vmc import blendshapes_from_face_landmarks
+
+                blendshapes = blendshapes_from_face_landmarks(pose_data.face_landmarks)
+            self.vmc.send(pose_data, blendshapes=blendshapes)
+        # In mocap mode the local frame is just used for HUD / preview.
+        return frame
+
+    def _step_faceswap(self, frame: np.ndarray, pose_data, audio) -> np.ndarray:
+        frame = self.identity.swap(frame, pose=pose_data)
+
+        if self.lipsync is not None and audio is not None:
+            frame = self.lipsync(frame, audio.read_chunks(), pose=pose_data)
+
+        if self.body is not None and pose_data is not None:
+            frame = self.body.render(frame, pose_data)
+
+        if self.stabilizer is not None:
+            frame = self.stabilizer.smooth(frame)
+
+        if self._hud is not None:
+            self._hud.tick()
+            self._hud.voice_state = (
+                f"{self.voice.backend}:{self.voice.voice_model or '-'}"
+                if self.voice is not None
+                else "off"
+            )
+            frame = draw_hud(frame, self._hud)
+
+        return frame

@@ -39,6 +39,9 @@ voice = [
     "websocket-client>=1.6",
     "soundfile>=0.12",
 ]
+mocap = [
+    "python-osc>=1.8",
+]
 preset = [
     "PyYAML>=6.0",
 ]

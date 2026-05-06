@@ -10,6 +10,7 @@ from .config import PipelineConfig
 from .errors import HealthCheckFailed, RTPFBError
 
 _CONFIG_FIELDS_FROM_CLI = {
+    "mode": "mode",
     "target": "target_face_path",
     "camera": "camera_index",
     "width": "width",
@@ -28,30 +29,51 @@ _CONFIG_FIELDS_FROM_CLI = {
     "voice_pitch": "voice_pitch_shift",
     "virtual_mic": "virtual_mic_device",
     "audio_blocksize": "audio_blocksize",
+    "vmc_host": "vmc_host",
+    "vmc_port": "vmc_port",
+    "no_vmc_face": ("vmc_face_blendshapes", lambda v: not v),
 }
 
 
 def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--preset", help="YAML preset file (CLI flags override preset values)")
-    p.add_argument("--target", default=None, help="Path to target face image")
+    p.add_argument(
+        "--mode",
+        choices=("mocap", "faceswap"),
+        default=None,
+        help="mocap = pose → VMC → external 3D renderer; faceswap = legacy 2D path",
+    )
+
     p.add_argument("--camera", type=int, default=None, help="Webcam index")
     p.add_argument("--width", type=int, default=None)
     p.add_argument("--height", type=int, default=None)
     p.add_argument("--fps", type=int, default=None)
-    p.add_argument("--swap-model", default=None, dest="swap_model")
 
-    p.add_argument("--no-pose", action="store_true", default=None, help="Disable MediaPipe pose tracking")
-    p.add_argument("--lipsync", action="store_true", default=None, help="Enable Wav2Lip post-process")
-    p.add_argument("--body", action="store_true", default=None, help="Enable body re-render (Phase 4)")
-    p.add_argument("--no-stabilize", action="store_true", default=None, help="Disable optical-flow stabilizer")
-    p.add_argument("--no-output", action="store_true", default=None, help="Don't open a virtual camera")
-
-    p.add_argument("--no-preflight", action="store_true", help="Skip startup health checks (not recommended)")
+    p.add_argument("--no-preflight", action="store_true", help="Skip startup health checks")
     p.add_argument("--no-hud", action="store_true", help="Hide the on-frame telemetry overlay")
     p.add_argument("--log-level", default=None, help="DEBUG / INFO / WARNING / ERROR")
 
+    mocap = p.add_argument_group("mocap mode (mode=mocap)")
+    mocap.add_argument("--vmc-host", default=None, dest="vmc_host", help="VMC receiver host (e.g. EVMC4U in Unreal)")
+    mocap.add_argument("--vmc-port", type=int, default=None, dest="vmc_port", help="VMC receiver port (default 39539)")
+    mocap.add_argument(
+        "--no-vmc-face",
+        action="store_true",
+        default=None,
+        help="Disable face blendshape synthesis (pose only)",
+    )
+
+    faceswap = p.add_argument_group("faceswap mode (mode=faceswap)")
+    faceswap.add_argument("--target", default=None, help="Path to target face image")
+    faceswap.add_argument("--swap-model", default=None, dest="swap_model")
+    faceswap.add_argument("--no-pose", action="store_true", default=None)
+    faceswap.add_argument("--lipsync", action="store_true", default=None, help="Enable Wav2Lip post-process")
+    faceswap.add_argument("--body", action="store_true", default=None, help="Enable body re-render stub")
+    faceswap.add_argument("--no-stabilize", action="store_true", default=None)
+    faceswap.add_argument("--no-output", action="store_true", default=None, help="Don't open a virtual camera")
+
     voice = p.add_argument_group("voice conversion (target ≤115ms latency)")
-    voice.add_argument("--voice", action="store_true", default=None, help="Enable real-time voice-to-voice conversion")
+    voice.add_argument("--voice", action="store_true", default=None)
     voice.add_argument(
         "--voice-backend",
         choices=("auto", "rvc", "knn-vc", "w-okada"),
@@ -85,8 +107,8 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
 
         return config_from_preset(args.preset, overrides=overrides)
 
-    if "target_face_path" not in overrides:
-        raise SystemExit("--target is required (or supply target_face_path in a --preset)")
+    if overrides.get("mode", "mocap") == "faceswap" and "target_face_path" not in overrides:
+        raise SystemExit("--target is required in faceswap mode")
     return PipelineConfig(**overrides)  # type: ignore[arg-type]
 
 
@@ -193,9 +215,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--method",
         choices=("knn-vc", "rvc"),
         default="knn-vc",
-        help="knn-vc = zero-shot, no training; rvc = full training",
     )
-    voice_add.add_argument("--accent", default="", help="Free-form accent tag")
+    voice_add.add_argument("--accent", default="")
     voice_add.add_argument("--notes", default="")
     voice_add.add_argument("--overwrite", action="store_true")
     voice_add.set_defaults(func=_voice_add_command)
