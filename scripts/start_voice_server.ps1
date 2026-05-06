@@ -160,13 +160,21 @@ if (-not (Test-PyImport $VenvPython "fairseq")) {
 # what w-okada actually does (loading a hubert checkpoint).
 if (-not (Test-PyImport $VenvPython "omegaconf, hydra, bitarray")) {
     Write-Host "[setup] Installing fairseq runtime deps (modern hydra/omegaconf)..."
-    & $VenvPython -m pip install bitarray omegaconf hydra-core sacrebleu portalocker regex cffi
+    & $VenvPython -m pip install bitarray omegaconf hydra-core sacrebleu portalocker regex cffi cython
     if ($LASTEXITCODE -ne 0) { throw "fairseq runtime deps install failed" }
+}
+
+# pyworld is used by w-okada's Dio/Harvest pitch extractors but isn't in
+# their requirements.txt either. Pre-built Windows wheels exist on PyPI.
+if (-not (Test-PyImport $VenvPython "pyworld")) {
+    Write-Host "[setup] Installing pyworld (missing from w-okada's requirements.txt)..."
+    & $VenvPython -m pip install pyworld
+    if ($LASTEXITCODE -ne 0) { throw "pyworld install failed" }
 }
 
 # --- sanity ----------------------------------------------------------------
 & $VenvPython -c @"
-import torch, fastapi, faiss, librosa, fairseq
+import torch, fastapi, faiss, librosa, fairseq, pyworld
 try:
     import onnxruntime
     rt = f'onnxruntime {onnxruntime.__version__}'
