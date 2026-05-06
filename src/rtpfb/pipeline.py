@@ -51,20 +51,32 @@ class Pipeline:
         if run_preflight:
             preflight(config).raise_if_failed()
 
-        self.capture = WebcamCapture(
-            index=config.camera_index,
-            width=config.width,
-            height=config.height,
-            fps=config.fps,
+        # Visual stages are only set up if some visual feature is requested.
+        # Voice-only configs skip camera, pose, and mode-specific init entirely.
+        needs_visual = (
+            config.enable_pose
+            or config.mode == "faceswap"
+            or config.enable_lipsync
+            or config.output_virtual_camera
+            or config.enable_body
         )
 
-        self.pose = PoseTracker() if (config.enable_pose or config.mode == "mocap") else None
-
-        # Mode-specific stages
-        if config.mode == "mocap":
-            self._init_mocap_stages(config)
+        if needs_visual:
+            self.capture = WebcamCapture(
+                index=config.camera_index,
+                width=config.width,
+                height=config.height,
+                fps=config.fps,
+            )
+            self.pose = PoseTracker() if config.enable_pose else None
+            if config.mode == "mocap":
+                self._init_mocap_stages(config)
+            else:
+                self._init_faceswap_stages(config)
         else:
-            self._init_faceswap_stages(config)
+            self.capture = None
+            self.pose = None
+            self._init_no_visual_stages()
 
         # Audio + voice are mode-agnostic.
         self.voice = (
@@ -124,6 +136,18 @@ class Pipeline:
         self.stabilizer = None
         self.output = None  # The 3D renderer owns video output.
 
+    def _init_no_visual_stages(self) -> None:
+        """Voice/audio-only configs: no camera, no pose, no mode-specific
+        stages. All visual attributes are None so the pipeline's visual
+        helpers are inert."""
+        self.vmc = None
+        self.face_blendshapes = None
+        self.identity = None
+        self.lipsync = None
+        self.body = None
+        self.stabilizer = None
+        self.output = None
+
     def _init_faceswap_stages(self, config: PipelineConfig) -> None:
         from .body import BodyRenderer
         from .identity import FaceSwapper
@@ -148,8 +172,28 @@ class Pipeline:
         self._stop = True
 
     def run(self) -> None:
+        if self.capture is None:
+            self._run_voice_only()
+            return
         for _ in self.iter_frames():
             pass
+
+    def _run_voice_only(self) -> None:
+        """Audio-only run loop: enter the audio context and idle until
+        ``request_stop()`` is called. The audio thread (sounddevice
+        callback) does all the work."""
+        log.info("pipeline starting (voice-only, no video)")
+        try:
+            with ExitStack() as stack:
+                if self.audio is not None:
+                    stack.enter_context(self.audio)
+                log.info("audio streaming - press Ctrl+C to stop")
+                while not self._stop:
+                    time.sleep(0.1)
+        finally:
+            if self.voice is not None:
+                self.voice.close()
+            log.info("pipeline shut down")
 
     def iter_frames(self) -> Iterator[np.ndarray]:
         log.info("pipeline starting (mode=%s)", self.config.mode)
