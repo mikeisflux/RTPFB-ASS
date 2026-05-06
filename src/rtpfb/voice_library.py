@@ -143,6 +143,83 @@ class VoiceLibrary:
             raise KeyError(name)
         shutil.rmtree(directory)
 
+    def import_voice(
+        self,
+        name: str,
+        *,
+        rvc_pth: Optional[Path] = None,
+        rvc_index: Optional[Path] = None,
+        knnvc_features: Optional[Path] = None,
+        accent_tag: str = "",
+        notes: str = "",
+        overwrite: bool = False,
+    ) -> VoiceMeta:
+        """Register a pre-trained voice without retraining.
+
+        Pre-trained RVC models are abundant online (weights.gg,
+        voice-models.com, huggingface). Drop the .pth + .index files into
+        the library:
+
+            lib.import_voice("alice",
+                rvc_pth=Path("alice.pth"),
+                rvc_index=Path("added_alice.index"),
+            )
+
+        For pre-computed KNN-VC features (rare):
+
+            lib.import_voice("alice", knnvc_features=Path("features.pt"))
+        """
+        if not (rvc_pth or knnvc_features):
+            raise ValueError("Provide rvc_pth or knnvc_features")
+        if rvc_pth and knnvc_features:
+            raise ValueError("Provide only one of rvc_pth or knnvc_features")
+
+        target = self.voice_dir(name)
+        if target.exists():
+            if not overwrite:
+                raise FileExistsError(
+                    f"Voice {name!r} already exists. Use overwrite=True to replace."
+                )
+            shutil.rmtree(target)
+        target.mkdir(parents=True)
+
+        if rvc_pth:
+            if not rvc_pth.exists():
+                shutil.rmtree(target)
+                raise FileNotFoundError(rvc_pth)
+            rvc_dir = target / "rvc"
+            rvc_dir.mkdir()
+            shutil.copy2(rvc_pth, rvc_dir / "model.pth")
+            if rvc_index:
+                if not rvc_index.exists():
+                    shutil.rmtree(target)
+                    raise FileNotFoundError(rvc_index)
+                shutil.copy2(rvc_index, rvc_dir / "added.index")
+            method = METHOD_RVC
+            sr = 40000
+        else:
+            assert knnvc_features is not None
+            if not knnvc_features.exists():
+                shutil.rmtree(target)
+                raise FileNotFoundError(knnvc_features)
+            knnvc_dir = target / "knnvc"
+            knnvc_dir.mkdir()
+            shutil.copy2(knnvc_features, knnvc_dir / "features.pt")
+            method = METHOD_KNNVC
+            sr = 16000
+
+        meta = VoiceMeta(
+            name=name,
+            method=method,
+            sample_rate=sr,
+            samples_seconds=0.0,
+            created_at=time.time(),
+            notes=notes or "imported (pre-trained)",
+            accent_tag=accent_tag,
+        )
+        (target / "meta.json").write_text(meta.to_json())
+        return meta
+
     def artifact_path(self, name: str) -> Path:
         meta = self.get(name)
         directory = self.voice_dir(name)

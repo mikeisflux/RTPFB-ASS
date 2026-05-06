@@ -87,6 +87,7 @@ class Pipeline:
                 samplerate=config.audio_samplerate,
                 channels=config.audio_channels,
                 blocksize=config.audio_blocksize,
+                input_device=config.mic_device,
                 output_device=config.virtual_mic_device,
             )
         elif config.enable_lipsync:
@@ -94,6 +95,7 @@ class Pipeline:
                 samplerate=config.audio_samplerate,
                 channels=config.audio_channels,
                 blocksize=config.audio_blocksize,
+                device=config.mic_device,
             )
         else:
             self.audio = None

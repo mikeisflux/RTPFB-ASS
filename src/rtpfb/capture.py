@@ -44,10 +44,12 @@ class WebcamCapture:
 class AudioCapture:
     """Background mic capture into a thread-safe queue."""
 
-    def __init__(self, samplerate: int = 16000, channels: int = 1, blocksize: int = 1024):
+    def __init__(self, samplerate: int = 16000, channels: int = 1, blocksize: int = 1024,
+                 device: Optional[Union[str, int]] = None):
         self.samplerate = samplerate
         self.channels = channels
         self.blocksize = blocksize
+        self.device = device
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream = None
 
@@ -62,6 +64,7 @@ class AudioCapture:
             channels=self.channels,
             blocksize=self.blocksize,
             callback=_callback,
+            device=self.device,
         )
         self._stream.start()
         return self
@@ -101,12 +104,14 @@ class RealTimeAudioStream:
         samplerate: int = 16000,
         channels: int = 1,
         blocksize: int = 256,
-        output_device: Optional[str | int] = None,
+        input_device: Optional[Union[str, int]] = None,
+        output_device: Optional[Union[str, int]] = None,
     ):
         self._voice = voice_changer
         self.samplerate = samplerate
         self.channels = channels
         self.blocksize = blocksize
+        self._input_device = input_device
         self._output_device = output_device
         self._queue: queue.Queue[np.ndarray] = queue.Queue()
         self._stream = None
@@ -132,7 +137,7 @@ class RealTimeAudioStream:
             channels=(self.channels, self.channels),
             dtype="float32",
             callback=_callback,
-            device=(None, self._output_device),
+            device=(self._input_device, self._output_device),
         )
         self._stream.start()
         return self

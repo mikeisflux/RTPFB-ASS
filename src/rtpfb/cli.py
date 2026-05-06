@@ -28,6 +28,7 @@ _CONFIG_FIELDS_FROM_CLI = {
     "voice_ws": "voice_ws_url",
     "voice_pitch": "voice_pitch_shift",
     "virtual_mic": "virtual_mic_device",
+    "mic_device": "mic_device",
     "audio_blocksize": "audio_blocksize",
     "vmc_host": "vmc_host",
     "vmc_port": "vmc_port",
@@ -84,6 +85,12 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     voice.add_argument("--voice-ws", default=None, dest="voice_ws")
     voice.add_argument("--voice-pitch", type=float, default=None, dest="voice_pitch")
     voice.add_argument("--virtual-mic", default=None, dest="virtual_mic")
+    voice.add_argument(
+        "--mic",
+        default=None,
+        dest="mic_device",
+        help="Input device name (substring match) or index. Override Windows default if it's set to a virtual cable.",
+    )
     voice.add_argument("--audio-blocksize", type=int, default=None, dest="audio_blocksize")
 
 
@@ -179,6 +186,26 @@ def _voice_remove_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _voice_import_command(args: argparse.Namespace) -> int:
+    from .voice_library import VoiceLibrary
+
+    pth = Path(args.pth) if args.pth else None
+    index = Path(args.index) if args.index else None
+    knnvc_features = Path(args.knnvc_features) if args.knnvc_features else None
+
+    meta = VoiceLibrary().import_voice(
+        name=args.name,
+        rvc_pth=pth,
+        rvc_index=index,
+        knnvc_features=knnvc_features,
+        accent_tag=args.accent,
+        notes=args.notes,
+        overwrite=args.overwrite,
+    )
+    print(f"imported voice {meta.name!r} ({meta.method}, pre-trained)")
+    return 0
+
+
 def _install_signal_handlers(pipeline) -> None:
     log = get_logger("rtpfb.cli")
 
@@ -224,6 +251,23 @@ def build_parser() -> argparse.ArgumentParser:
     voice_rm = voice_sub.add_parser("remove", help="Remove a voice")
     voice_rm.add_argument("name")
     voice_rm.set_defaults(func=_voice_remove_command)
+
+    voice_imp = voice_sub.add_parser(
+        "import",
+        help="Import a pre-trained voice model (.pth from RVC, etc.)",
+    )
+    voice_imp.add_argument("name")
+    voice_imp.add_argument("--pth", help="Path to a pre-trained RVC .pth model")
+    voice_imp.add_argument("--index", help="Optional matching .index retrieval file")
+    voice_imp.add_argument(
+        "--knnvc-features",
+        dest="knnvc_features",
+        help="Path to a pre-computed KNN-VC features.pt (alternative to --pth)",
+    )
+    voice_imp.add_argument("--accent", default="")
+    voice_imp.add_argument("--notes", default="")
+    voice_imp.add_argument("--overwrite", action="store_true")
+    voice_imp.set_defaults(func=_voice_import_command)
 
     return p
 

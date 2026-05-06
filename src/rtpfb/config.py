@@ -53,5 +53,8 @@ class PipelineConfig:
     voice_crossfade_samples: int = 64
 
     virtual_mic_device: Optional[Union[str, int]] = None
+    # Mic input override — useful on Windows where the default input is
+    # often a virtual cable instead of the physical mic.
+    mic_device: Optional[Union[str, int]] = None
 
     stabilize_blend: float = 0.35
