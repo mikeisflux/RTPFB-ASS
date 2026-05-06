@@ -63,16 +63,28 @@ This pulls numpy, opencv, mediapipe, insightface, onnxruntime-gpu, sounddevice, 
 
 ### 1.5 Pull upstream repos
 
+**Linux / macOS / Git Bash:**
 ```bash
 bash scripts/install_third_party.sh
+```
+
+**Windows PowerShell** (use this if you got `/bin/bash: No such file or directory`):
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_third_party.ps1
 ```
 
 Clones voice-changer, RVC-WebUI, knn-vc, Wav2Lip, and others into `third_party/` (gitignored). Takes ~5 min depending on network.
 
 ### 1.6 Download model files
 
+**Linux / macOS / Git Bash:**
 ```bash
 bash scripts/download_models.sh
+```
+
+**Windows PowerShell:**
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\download_models.ps1
 ```
 
 This auto-fetches `face_landmarker.task` (~3 MB, MediaPipe Apache-2.0). Other model weights have terms of use — the script prints what to grab and where.
