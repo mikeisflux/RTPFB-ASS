@@ -65,11 +65,28 @@ def test_unknown_keys_rejected(tmp_path):
         config_from_preset(p)
 
 
-def test_missing_target_rejected(tmp_path):
+def test_missing_target_rejected_for_faceswap(tmp_path):
     p = tmp_path / "p.yaml"
-    p.write_text("fps: 30\n")
+    p.write_text("mode: faceswap\nfps: 30\n")
     with pytest.raises(ConfigurationError):
         config_from_preset(p)
+
+
+def test_missing_target_rejected_for_body_render(tmp_path):
+    p = tmp_path / "p.yaml"
+    p.write_text("enable_body: true\nfps: 30\n")
+    with pytest.raises(ConfigurationError):
+        config_from_preset(p)
+
+
+def test_missing_target_ok_for_voice_only(tmp_path):
+    # Voice-only / mocap-only presets don't load a target face, so the
+    # target_face_path requirement should not apply to them.
+    p = tmp_path / "p.yaml"
+    p.write_text("enable_voice: true\nfps: 30\n")
+    cfg = config_from_preset(p)
+    assert cfg.enable_voice is True
+    assert cfg.target_face_path == ""
 
 
 def test_missing_file(tmp_path):

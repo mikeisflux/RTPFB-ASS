@@ -52,8 +52,16 @@ def _instantiate_config(data: dict[str, Any]) -> PipelineConfig:
         raise ConfigurationError(
             f"Unknown preset keys: {sorted(unknown)}. Valid: {sorted(valid)}"
         )
-    if "target_face_path" not in data or not data["target_face_path"]:
+    # target_face_path is only loaded when we actually build a FaceSwapper
+    # (faceswap mode) or BodyRenderer (enable_body). Voice-only / mocap-only
+    # presets don't need it.
+    needs_target_face = (
+        data.get("mode", "mocap") == "faceswap"
+        or data.get("enable_body", False)
+    )
+    if needs_target_face and not data.get("target_face_path"):
         raise ConfigurationError(
-            "target_face_path is required (set it in the preset or pass --target on the CLI)"
+            "target_face_path is required for faceswap mode or enable_body=true "
+            "(set it in the preset or pass --target on the CLI)"
         )
     return PipelineConfig(**data)
