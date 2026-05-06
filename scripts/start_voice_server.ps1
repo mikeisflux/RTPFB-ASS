@@ -20,6 +20,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Run a Python import probe without letting a failed import (which writes a
+# traceback to stderr) terminate the script. With $ErrorActionPreference=Stop,
+# native commands writing to stderr raise NativeCommandError even when
+# stderr is redirected. This helper sidesteps that.
+function Test-PyImport {
+    param([string]$PythonExe, [string]$ModuleList)
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $PythonExe -c "import $ModuleList" 2>&1 | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        $ErrorActionPreference = $saved
+    }
+}
+
 $RepoRoot      = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ServerDir     = Join-Path $RepoRoot "third_party\voice-changer\server"
 $VenvDir       = Join-Path $ServerDir ".venv-wokada"
@@ -47,8 +63,7 @@ if (-not (Test-Path $VenvPython)) {
     $NeedsInstall = $true
 } else {
     # Check whether key deps are importable; if not, treat as fresh install.
-    & $VenvPython -c "import torch, fastapi, faiss, librosa, onnxruntime" 2>$null
-    $NeedsInstall = ($LASTEXITCODE -ne 0)
+    $NeedsInstall = -not (Test-PyImport $VenvPython "torch, fastapi, faiss, librosa, onnxruntime")
 }
 
 # In -Nightly mode, also force a torch upgrade if the installed torch is the
@@ -132,8 +147,7 @@ elseif ($NeedsTorchUpgrade) {
 # Install with --no-deps because fairseq pins torch<2 and we'd otherwise lose
 # our nightly cu128 install. Then install fairseq's actual runtime Python
 # deps separately (minus torch/torchaudio which we manage).
-& $VenvPython -c "import fairseq" 2>$null
-if ($LASTEXITCODE -ne 0) {
+if (-not (Test-PyImport $VenvPython "fairseq")) {
     Write-Host "[setup] Installing fairseq (missing from w-okada's requirements.txt)..."
     & $VenvPython -m pip install "fairseq==0.12.2" --no-deps
     if ($LASTEXITCODE -ne 0) { throw "fairseq install failed" }
