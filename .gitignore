@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Project artifacts (cloned upstream + downloaded weights are heavy and
+# usually license-restricted — keep them out of git)
+third_party/
+models/
+assets/local/
+*.onnx
+*.pth
+*.safetensors
+*.bin
+*.ckpt
+
+# Runtime
+*.log
+recordings/
+
+# Don't ignore the original test placeholder
+!test

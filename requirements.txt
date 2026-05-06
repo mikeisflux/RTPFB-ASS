@@ -1,0 +1,9 @@
+numpy>=1.24
+opencv-python>=4.8
+mediapipe>=0.10
+insightface>=0.7
+onnx>=1.14
+onnxruntime-gpu>=1.16; sys_platform != 'darwin'
+onnxruntime>=1.16; sys_platform == 'darwin'
+pyvirtualcam>=0.11
+sounddevice>=0.4
