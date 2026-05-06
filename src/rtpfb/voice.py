@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import json
-import queue
-import socket
-import struct
-import threading
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -25,27 +21,28 @@ DEFAULT_CROSSFADE_SAMPLES = 64
 class StreamingVoiceChanger:
     """Real-time voice-to-voice conversion.
 
-    Two backends, picked by the ``backend`` arg:
+    Backends (set via ``backend`` or auto-detected from the voice library):
 
-      * ``"rvc"`` — in-process RVC inference. Loads the RVC generator + a
-        f0 estimator (RMVPE) + HuBERT content encoder. Lowest latency once
-        the models are warm; needs the weights laid out under
-        ``models/voice/<voice_name>/``.
+      * ``"knn-vc"`` — in-process KNN-VC. Loads cached WavLM features for the
+        target voice (created with ``rtpfb voice add --method knn-vc``).
+        Zero-shot: no training run, ~1–5 min of reference audio is enough.
 
-      * ``"w-okada"`` — remote backend. Talks to a running
-        ``third_party/voice-changer`` server (default ``ws://localhost:18888``).
-        Lets you reuse w-okada's already-tuned realtime stack today while the
-        in-process path is being built.
+      * ``"rvc"`` — in-process RVC inference. Highest quality. Loader is a
+        stub until we pin an RVC release tag.
 
-    The streaming contract is a single method: ``process(chunk) -> chunk``.
-    Drop-in between mic capture and Wav2Lip / virtual-mic output. Internal
-    overlap-add hides chunk boundaries.
+      * ``"w-okada"`` — talks to a running ``third_party/voice-changer``
+        server over WebSocket. Lets you reuse w-okada's tuned realtime stack
+        today; voice slot IDs map to ``--voice-model``.
+
+    Streaming contract is one method: ``process(chunk) -> chunk``. Drop in
+    between mic capture and the virtual mic / Wav2Lip lipsync feed. An
+    internal crossfade hides chunk boundaries.
     """
 
     def __init__(
         self,
-        voice_model: str,
-        backend: str = "rvc",
+        voice_model: str = "",
+        backend: str = "auto",
         device: str = "cuda",
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         chunk_samples: int = DEFAULT_CHUNK_SAMPLES,
@@ -54,7 +51,6 @@ class StreamingVoiceChanger:
         pitch_shift_semitones: float = 0.0,
     ):
         self.voice_model = voice_model
-        self.backend = backend
         self.device = device
         self.sample_rate = sample_rate
         self.chunk_samples = chunk_samples
@@ -62,112 +58,145 @@ class StreamingVoiceChanger:
         self.pitch_shift_semitones = pitch_shift_semitones
         self.ws_url = ws_url
 
-        self._tail = np.zeros(crossfade_samples, dtype=np.float32)
+        if backend == "auto":
+            backend = self._auto_detect_backend(voice_model)
+        self.backend = backend
 
-        if backend == "rvc":
+        self._tail = np.zeros(crossfade_samples, dtype=np.float32)
+        self._ws = None
+
+        if backend == "knn-vc":
+            self._init_knnvc()
+        elif backend == "rvc":
             self._init_rvc()
         elif backend == "w-okada":
             self._init_okada()
         else:
             raise ValueError(f"Unknown voice-changer backend: {backend!r}")
 
+    @staticmethod
+    def _auto_detect_backend(voice_model: str) -> str:
+        if not voice_model:
+            return "w-okada"
+        try:
+            from .voice_library import VoiceLibrary
+
+            meta = VoiceLibrary().get(voice_model)
+            return meta.method
+        except KeyError:
+            return "w-okada"
+
+    # --------------------------- KNN-VC backend ---------------------------
+
+    def _init_knnvc(self) -> None:
+        from .voice_library import VoiceLibrary
+
+        lib = VoiceLibrary()
+        artifact = lib.artifact_path(self.voice_model)
+        if not artifact.exists():
+            raise FileNotFoundError(
+                f"KNN-VC features not found: {artifact}. "
+                f"Run `rtpfb voice add {self.voice_model} --samples DIR --method knn-vc` first."
+            )
+
+        knn_root = THIRD_PARTY_DIR / "knn-vc"
+        if not knn_root.exists():
+            raise FileNotFoundError(
+                f"{knn_root} missing — run scripts/install_third_party.sh"
+            )
+        if str(knn_root) not in sys.path:
+            sys.path.insert(0, str(knn_root))
+
+        import torch
+
+        self._torch = torch
+        self._knn = torch.hub.load("bshall/knn-vc", "knn_vc", trust_repo=True, prematched=True)
+        self._target_feats = torch.load(artifact, map_location=self.device)
+
+        # Streaming buffer. KNN-VC needs ~500ms+ of context for stable WavLM
+        # features; we pad with zeros until full, then keep a sliding 2s window.
+        self._knnvc_buffer = np.zeros(0, dtype=np.float32)
+        self._knnvc_min_samples = int(self.sample_rate * 0.5)
+        self._knnvc_window_samples = int(self.sample_rate * 1.0)
+        self._knnvc_max_buffer = int(self.sample_rate * 2.0)
+
+    def _process_knnvc(self, chunk: np.ndarray) -> np.ndarray:
+        self._knnvc_buffer = np.concatenate([self._knnvc_buffer, chunk])
+        if self._knnvc_buffer.size > self._knnvc_max_buffer:
+            self._knnvc_buffer = self._knnvc_buffer[-self._knnvc_max_buffer:]
+
+        if self._knnvc_buffer.size < self._knnvc_min_samples:
+            return chunk
+
+        torch = self._torch
+        ctx = self._knnvc_buffer[-self._knnvc_window_samples:]
+        with torch.no_grad():
+            wav_t = torch.from_numpy(ctx).unsqueeze(0).to(self._target_feats.device)
+            query_feats = self._knn.get_features(wav_t)
+            out_wav = self._knn.match(query_feats, self._target_feats, topk=4)
+            out_np = out_wav.detach().cpu().numpy().astype(np.float32)
+
+        if out_np.size < chunk.size:
+            pad = np.zeros(chunk.size - out_np.size, dtype=np.float32)
+            return np.concatenate([pad, out_np])
+        return out_np[-chunk.size:]
+
+    # ----------------------------- RVC backend ----------------------------
+
     def _init_rvc(self) -> None:
-        """In-process RVC inference path.
-
-        Pieces (each lazy-loaded so the import doesn't pay for what's unused):
-
-          * ContentVec / HuBERT encoder — extracts speaker-independent content
-            embeddings every 16ms-ish frame.
-          * RMVPE f0 estimator — pitch contour for the chunk.
-          * RVC generator (synth_t) — produces target-voice audio from
-            (content, f0, target speaker embedding).
-
-        We path-import from ``third_party/RVC-WebUI`` rather than vendoring
-        because the model registry + checkpoint loaders move around between
-        RVC versions.
-        """
         rvc_root = THIRD_PARTY_DIR / "RVC-WebUI"
         if not rvc_root.exists():
             raise FileNotFoundError(
                 f"{rvc_root} missing — run scripts/install_third_party.sh"
             )
-        # Lazy: actual model load happens on first ``process`` call so the
-        # constructor stays cheap and the model loads on the audio thread.
         self._rvc_root = rvc_root
-        self._rvc = None  # populated by _ensure_rvc_loaded
+        self._rvc = None
 
-    def _ensure_rvc_loaded(self) -> None:
-        if self._rvc is not None:
-            return
-        import sys
-
-        if str(self._rvc_root) not in sys.path:
-            sys.path.insert(0, str(self._rvc_root))
-
-        # NOTE: RVC-WebUI's public API has churned. The pieces we need at
-        # inference time are roughly:
-        #   from infer.modules.vc.modules import VC
-        #   from configs.config import Config
-        # Wire the exact symbols once we lock to a specific RVC release tag.
+    def _process_rvc(self, chunk: np.ndarray) -> np.ndarray:  # noqa: ARG002
         raise NotImplementedError(
-            "In-process RVC backend not wired yet. Use backend='w-okada' "
-            "against a running third_party/voice-changer server, or pin RVC "
-            "and finish the loader."
+            "In-process RVC backend not wired yet. Use --voice-backend w-okada "
+            "with a running voice-changer server, or --voice-backend knn-vc "
+            "with a knn-vc voice from the library."
         )
 
+    # --------------------------- w-okada backend --------------------------
+
     def _init_okada(self) -> None:
-        """Connect to a running w-okada/voice-changer instance.
-
-        Run the server first:
-
-            cd third_party/voice-changer/server
-            python MMVCServerSIO.py -p 18888 --https false
-
-        Load the target voice in its UI (or via its API) and copy the slot
-        index into PipelineConfig.voice_slot.
-        """
         try:
             import websocket  # type: ignore[import-not-found]
-        except ImportError as e:
+        except ImportError as exc:
             raise ImportError(
                 "websocket-client is required for the w-okada backend. "
                 "Install with: pip install websocket-client"
-            ) from e
+            ) from exc
         self._websocket = websocket
         self._ws = websocket.create_connection(self.ws_url, timeout=5.0)
 
-    def process(self, audio_chunk: np.ndarray) -> np.ndarray:
-        """Convert a chunk of source-voice audio to target-voice audio.
-
-        ``audio_chunk`` is mono float32 at ``self.sample_rate``. The returned
-        chunk is the same length and dtype.
-        """
-        if audio_chunk.size == 0:
-            return audio_chunk
-
-        if self.backend == "w-okada":
-            converted = self._process_okada(audio_chunk)
-        else:
-            self._ensure_rvc_loaded()
-            converted = self._process_rvc(audio_chunk)
-
-        return self._crossfade(converted)
-
     def _process_okada(self, chunk: np.ndarray) -> np.ndarray:
-        # w-okada's protocol expects int16 PCM frames over WebSocket.
         pcm = (np.clip(chunk, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
         self._ws.send_binary(pcm)
         reply = self._ws.recv()
         if isinstance(reply, str):
             reply = reply.encode()
         out_int16 = np.frombuffer(reply, dtype=np.int16)
-        return (out_int16.astype(np.float32) / 32767.0)
+        return out_int16.astype(np.float32) / 32767.0
 
-    def _process_rvc(self, chunk: np.ndarray) -> np.ndarray:  # noqa: ARG002
-        raise NotImplementedError("RVC in-process backend not wired yet")
+    # --------------------------- common surface ---------------------------
+
+    def process(self, audio_chunk: np.ndarray) -> np.ndarray:
+        if audio_chunk.size == 0:
+            return audio_chunk
+
+        if self.backend == "knn-vc":
+            converted = self._process_knnvc(audio_chunk)
+        elif self.backend == "rvc":
+            converted = self._process_rvc(audio_chunk)
+        else:
+            converted = self._process_okada(audio_chunk)
+
+        return self._crossfade(converted)
 
     def _crossfade(self, chunk: np.ndarray) -> np.ndarray:
-        """Linear crossfade with the previous tail to suppress chunk-edge clicks."""
         if chunk.size <= self.crossfade_samples:
             self._tail = chunk[-self.crossfade_samples:]
             return chunk
@@ -179,7 +208,7 @@ class StreamingVoiceChanger:
         return out
 
     def close(self) -> None:
-        if self.backend == "w-okada" and getattr(self, "_ws", None) is not None:
+        if self._ws is not None:
             try:
                 self._ws.close()
             except Exception:

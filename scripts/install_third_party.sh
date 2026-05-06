@@ -36,6 +36,10 @@ clone_if_missing https://github.com/w-okada/voice-changer.git                   
 clone_if_missing https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git       RVC-WebUI
 clone_if_missing https://github.com/yxlllc/DDSP-SVC.git                                          DDSP-SVC
 
+# Zero-shot voice cloning. KNN-VC needs ~1-5 minutes of reference audio and
+# no training run — just cache WavLM features per target speaker.
+clone_if_missing https://github.com/bshall/knn-vc.git                                            knn-vc
+
 # Optional / heavy — uncomment if you want the 3D Gaussian path.
 # clone_if_missing https://github.com/graphdeco-inria/gaussian-splatting.git gaussian-splatting
 
