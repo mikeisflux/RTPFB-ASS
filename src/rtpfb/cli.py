@@ -9,6 +9,16 @@ from ._log import configure_logging, get_logger
 from .config import PipelineConfig
 from .errors import HealthCheckFailed, RTPFBError
 
+def _parse_device_id(raw):
+    """sounddevice accepts either an integer index or a name substring.
+    A bare numeric CLI string (e.g. ``--mic 18``) means the index, not a
+    name to substring-match. Without this conversion the user would have
+    to provide a substring unique across MME/DirectSound/WASAPI/WDM-KS."""
+    if isinstance(raw, str) and raw.lstrip("-").isdigit():
+        return int(raw)
+    return raw
+
+
 _CONFIG_FIELDS_FROM_CLI = {
     "mode": "mode",
     "target": "target_face_path",
@@ -27,8 +37,8 @@ _CONFIG_FIELDS_FROM_CLI = {
     "voice_backend": "voice_backend",
     "voice_ws": "voice_ws_url",
     "voice_pitch": "voice_pitch_shift",
-    "virtual_mic": "virtual_mic_device",
-    "mic_device": "mic_device",
+    "virtual_mic": ("virtual_mic_device", _parse_device_id),
+    "mic_device": ("mic_device", _parse_device_id),
     "audio_blocksize": "audio_blocksize",
     "vmc_host": "vmc_host",
     "vmc_port": "vmc_port",
