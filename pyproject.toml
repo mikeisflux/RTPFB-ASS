@@ -36,7 +36,7 @@ body = [
 ]
 voice = [
     "torch>=2.1",
-    "websocket-client>=1.6",
+    "python-socketio[client]>=5.10",
     "soundfile>=0.12",
 ]
 mocap = [

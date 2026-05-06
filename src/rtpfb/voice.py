@@ -63,7 +63,8 @@ class StreamingVoiceChanger:
         self.backend = backend
 
         self._tail = np.zeros(crossfade_samples, dtype=np.float32)
-        self._ws = None
+        self._sio = None
+        self._response_queue = None
 
         if backend == "knn-vc":
             self._init_knnvc()
@@ -162,23 +163,70 @@ class StreamingVoiceChanger:
     # --------------------------- w-okada backend --------------------------
 
     def _init_okada(self) -> None:
+        # w-okada speaks Socket.IO (not raw WebSocket). Audio streaming uses
+        # an event-based protocol: client emits `request_message` with
+        # [timestamp_ms, int16_pcm_bytes], server replies asynchronously by
+        # emitting `response` with [timestamp_ms, int16_pcm_bytes, perf].
         try:
-            import websocket  # type: ignore[import-not-found]
+            import socketio  # type: ignore[import-not-found]
         except ImportError as exc:
             raise ImportError(
-                "websocket-client is required for the w-okada backend. "
-                "Install with: pip install websocket-client"
+                "python-socketio[client] is required for the w-okada backend. "
+                'Install with: pip install "python-socketio[client]"'
             ) from exc
-        self._websocket = websocket
-        self._ws = websocket.create_connection(self.ws_url, timeout=5.0)
+
+        from queue import Queue
+
+        self._socketio = socketio
+        self._sio = socketio.Client()
+        self._response_queue = Queue()
+
+        @self._sio.on("response")
+        def _on_response(*args):
+            # w-okada server may emit either as separate positional args or
+            # as a single list - normalize to a tuple.
+            self._response_queue.put(args)
+
+        # python-socketio.Client expects an http(s) URL. Auto-translate the
+        # ws:// URL the user passes (matches the historical --voice-ws flag).
+        url = self.ws_url
+        if url.startswith("ws://"):
+            url = "http://" + url[len("ws://"):]
+        elif url.startswith("wss://"):
+            url = "https://" + url[len("wss://"):]
+        self._sio.connect(url, transports=["websocket"], wait_timeout=10.0)
 
     def _process_okada(self, chunk: np.ndarray) -> np.ndarray:
+        import time
+        from queue import Empty
+
+        # Drain stale responses left over from a previous timed-out request,
+        # so we never return audio that doesn't belong to this chunk.
+        while not self._response_queue.empty():
+            try:
+                self._response_queue.get_nowait()
+            except Empty:
+                break
+
         pcm = (np.clip(chunk, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
-        self._ws.send_binary(pcm)
-        reply = self._ws.recv()
-        if isinstance(reply, str):
-            reply = reply.encode()
-        out_int16 = np.frombuffer(reply, dtype=np.int16)
+        timestamp_ms = int(time.time() * 1000)
+        self._sio.emit("request_message", [timestamp_ms, pcm])
+
+        try:
+            response = self._response_queue.get(timeout=2.0)
+        except Empty:
+            return chunk  # pass-through on timeout - keeps audio flowing
+
+        # Normalize: server may have emitted either (ts, bin, perf) as 3 args
+        # or [ts, bin, perf] as a single list arg.
+        if len(response) == 1 and isinstance(response[0], (list, tuple)):
+            response = response[0]
+        if len(response) < 2:
+            return chunk
+        out_bytes = response[1]
+        if isinstance(out_bytes, str):
+            out_bytes = out_bytes.encode("latin-1")
+        out_int16 = np.frombuffer(out_bytes, dtype=np.int16)
         return out_int16.astype(np.float32) / 32767.0
 
     # --------------------------- common surface ---------------------------
@@ -208,9 +256,9 @@ class StreamingVoiceChanger:
         return out
 
     def close(self) -> None:
-        if self._ws is not None:
+        if self._sio is not None:
             try:
-                self._ws.close()
+                self._sio.disconnect()
             except Exception:
                 pass
-            self._ws = None
+            self._sio = None
