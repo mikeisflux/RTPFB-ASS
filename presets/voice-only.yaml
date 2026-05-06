@@ -14,5 +14,10 @@ enable_stabilize: false
 output_virtual_camera: false
 output_virtual_mic: true
 
-audio_blocksize: 256
+# Windows WASAPI shared mode rejects arbitrary sample rates; 48 kHz matches
+# the system default and most realtime voice models (incl. RVC v2 at 48k).
+# 1024 samples = ~21 ms per block - small enough for low latency, big
+# enough to avoid underruns on Windows.
+audio_samplerate: 48000
+audio_blocksize: 1024
 voice_backend: auto
