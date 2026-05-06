@@ -1,0 +1,18 @@
+# Voice-only preset: no virtual camera, just real-time voice conversion to a
+# loopback mic. Useful for streaming the voice without a face avatar (or while
+# debugging the audio path).
+#
+# Usage:
+#   rtpfb run --preset presets/voice-only.yaml --target ./assets/face.png --voice-model alice
+
+enable_pose: false
+enable_voice: true
+enable_lipsync: false
+enable_body: false
+enable_stabilize: false
+
+output_virtual_camera: false
+output_virtual_mic: true
+
+audio_blocksize: 256
+voice_backend: auto

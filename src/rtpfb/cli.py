@@ -1,83 +1,126 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 from pathlib import Path
 
+from ._log import configure_logging, get_logger
 from .config import PipelineConfig
-from .pipeline import Pipeline
-from .voice_library import METHODS, METHOD_KNNVC, VoiceLibrary
+from .errors import HealthCheckFailed, RTPFBError
+
+_CONFIG_FIELDS_FROM_CLI = {
+    "target": "target_face_path",
+    "camera": "camera_index",
+    "width": "width",
+    "height": "height",
+    "fps": "fps",
+    "swap_model": "swap_model",
+    "no_pose": ("enable_pose", lambda v: not v),
+    "voice": "enable_voice",
+    "lipsync": "enable_lipsync",
+    "body": "enable_body",
+    "no_stabilize": ("enable_stabilize", lambda v: not v),
+    "no_output": ("output_virtual_camera", lambda v: not v),
+    "voice_model": "voice_model",
+    "voice_backend": "voice_backend",
+    "voice_ws": "voice_ws_url",
+    "voice_pitch": "voice_pitch_shift",
+    "virtual_mic": "virtual_mic_device",
+    "audio_blocksize": "audio_blocksize",
+}
 
 
 def _add_run_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--target", required=True, help="Path to target face image (used as the persona)")
-    p.add_argument("--camera", type=int, default=0, help="Webcam index")
-    p.add_argument("--width", type=int, default=1280)
-    p.add_argument("--height", type=int, default=720)
-    p.add_argument("--fps", type=int, default=30)
-    p.add_argument("--swap-model", default="inswapper_128.onnx")
+    p.add_argument("--preset", help="YAML preset file (CLI flags override preset values)")
+    p.add_argument("--target", default=None, help="Path to target face image")
+    p.add_argument("--camera", type=int, default=None, help="Webcam index")
+    p.add_argument("--width", type=int, default=None)
+    p.add_argument("--height", type=int, default=None)
+    p.add_argument("--fps", type=int, default=None)
+    p.add_argument("--swap-model", default=None, dest="swap_model")
 
-    p.add_argument("--no-pose", action="store_true", help="Disable MediaPipe pose tracking")
-    p.add_argument("--lipsync", action="store_true", help="Enable Wav2Lip post-process")
-    p.add_argument("--body", action="store_true", help="Enable body re-render (Phase 4 stub)")
-    p.add_argument("--no-stabilize", action="store_true", help="Disable optical-flow stabilizer")
-    p.add_argument("--no-output", action="store_true", help="Don't open a virtual camera; just iterate frames")
+    p.add_argument("--no-pose", action="store_true", default=None, help="Disable MediaPipe pose tracking")
+    p.add_argument("--lipsync", action="store_true", default=None, help="Enable Wav2Lip post-process")
+    p.add_argument("--body", action="store_true", default=None, help="Enable body re-render (Phase 4)")
+    p.add_argument("--no-stabilize", action="store_true", default=None, help="Disable optical-flow stabilizer")
+    p.add_argument("--no-output", action="store_true", default=None, help="Don't open a virtual camera")
+
+    p.add_argument("--no-preflight", action="store_true", help="Skip startup health checks (not recommended)")
+    p.add_argument("--no-hud", action="store_true", help="Hide the on-frame telemetry overlay")
+    p.add_argument("--log-level", default=None, help="DEBUG / INFO / WARNING / ERROR")
 
     voice = p.add_argument_group("voice conversion (target ≤115ms latency)")
-    voice.add_argument("--voice", action="store_true", help="Enable real-time voice-to-voice conversion")
+    voice.add_argument("--voice", action="store_true", default=None, help="Enable real-time voice-to-voice conversion")
     voice.add_argument(
         "--voice-backend",
         choices=("auto", "rvc", "knn-vc", "w-okada"),
-        default="auto",
-        help="auto = look up voice in the library; otherwise force a backend",
-    )
-    voice.add_argument(
-        "--voice-model",
-        default="",
-        help="Voice name from the library (`rtpfb voice list`) — or a w-okada slot id",
-    )
-    voice.add_argument("--voice-ws", default="ws://localhost:18888", help="WebSocket URL for w-okada backend")
-    voice.add_argument("--voice-pitch", type=float, default=0.0, help="Pitch shift in semitones")
-    voice.add_argument(
-        "--virtual-mic",
         default=None,
-        help="sounddevice output device name or index (loopback / VB-CABLE / BlackHole)",
+        dest="voice_backend",
     )
-    voice.add_argument(
-        "--audio-blocksize",
-        type=int,
-        default=256,
-        help="Samples per audio chunk. 256@16kHz ≈ 16ms; smaller = lower latency, more CPU overhead",
-    )
+    voice.add_argument("--voice-model", default=None, dest="voice_model")
+    voice.add_argument("--voice-ws", default=None, dest="voice_ws")
+    voice.add_argument("--voice-pitch", type=float, default=None, dest="voice_pitch")
+    voice.add_argument("--virtual-mic", default=None, dest="virtual_mic")
+    voice.add_argument("--audio-blocksize", type=int, default=None, dest="audio_blocksize")
+
+
+def _build_config(args: argparse.Namespace) -> PipelineConfig:
+    overrides: dict[str, object] = {}
+    for cli_attr, mapping in _CONFIG_FIELDS_FROM_CLI.items():
+        raw = getattr(args, cli_attr, None)
+        if raw is None:
+            continue
+        if isinstance(mapping, tuple):
+            field, transform = mapping
+            overrides[field] = transform(raw)
+        else:
+            overrides[mapping] = raw
+
+    if args.voice is True or args.virtual_mic is not None:
+        overrides["output_virtual_mic"] = True
+
+    if args.preset:
+        from .preset import config_from_preset
+
+        return config_from_preset(args.preset, overrides=overrides)
+
+    if "target_face_path" not in overrides:
+        raise SystemExit("--target is required (or supply target_face_path in a --preset)")
+    return PipelineConfig(**overrides)  # type: ignore[arg-type]
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    cfg = PipelineConfig(
-        target_face_path=args.target,
-        camera_index=args.camera,
-        width=args.width,
-        height=args.height,
-        fps=args.fps,
-        swap_model=args.swap_model,
-        enable_pose=not args.no_pose,
-        enable_voice=args.voice,
-        enable_lipsync=args.lipsync,
-        enable_body=args.body,
-        enable_stabilize=not args.no_stabilize,
-        output_virtual_camera=not args.no_output,
-        output_virtual_mic=args.voice or args.virtual_mic is not None,
-        audio_blocksize=args.audio_blocksize,
-        voice_model=args.voice_model,
-        voice_backend=args.voice_backend,
-        voice_ws_url=args.voice_ws,
-        voice_pitch_shift=args.voice_pitch,
-        virtual_mic_device=args.virtual_mic,
-    )
-    Pipeline(cfg).run()
+    log = get_logger("rtpfb.cli")
+    cfg = _build_config(args)
+
+    if not args.no_preflight:
+        from .health import preflight
+
+        report = preflight(cfg)
+        if not report.ok():
+            log.error("preflight failed:\n  - %s", "\n  - ".join(report.failures()))
+            return 2
+
+    from .pipeline import Pipeline
+
+    pipeline = Pipeline(cfg, run_preflight=False, show_hud=not args.no_hud)
+    _install_signal_handlers(pipeline)
+    pipeline.run()
     return 0
 
 
+def _health_command(args: argparse.Namespace) -> int:
+    cfg = _build_config(args)
+    from .health import preflight
+
+    report = preflight(cfg)
+    return 0 if report.ok() else 2
+
+
 def _voice_list_command(_args: argparse.Namespace) -> int:
+    from .voice_library import VoiceLibrary
+
     voices = VoiceLibrary().list_voices()
     if not voices:
         print("(no voices registered — use `rtpfb voice add`)")
@@ -92,6 +135,8 @@ def _voice_list_command(_args: argparse.Namespace) -> int:
 
 
 def _voice_add_command(args: argparse.Namespace) -> int:
+    from .voice_library import VoiceLibrary
+
     meta = VoiceLibrary().add(
         name=args.name,
         samples_dir=Path(args.samples),
@@ -105,9 +150,22 @@ def _voice_add_command(args: argparse.Namespace) -> int:
 
 
 def _voice_remove_command(args: argparse.Namespace) -> int:
+    from .voice_library import VoiceLibrary
+
     VoiceLibrary().remove(args.name)
     print(f"removed voice {args.name!r}")
     return 0
+
+
+def _install_signal_handlers(pipeline) -> None:
+    log = get_logger("rtpfb.cli")
+
+    def handler(signum, _frame):
+        log.info("signal %s received, requesting graceful shutdown", signum)
+        pipeline.request_stop()
+
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -118,6 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_args(run)
     run.set_defaults(func=_run_command)
 
+    health = sub.add_parser("health", help="Run preflight checks and exit")
+    _add_run_args(health)
+    health.set_defaults(func=_health_command)
+
     voice = sub.add_parser("voice", help="Manage cloned voices")
     voice_sub = voice.add_subparsers(dest="voice_command", required=True)
 
@@ -126,23 +188,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     voice_add = voice_sub.add_parser("add", help="Train / register a voice from sample audio")
     voice_add.add_argument("name", help="Voice name (used with --voice-model)")
-    voice_add.add_argument(
-        "--samples",
-        required=True,
-        help="Directory of audio samples (.wav/.flac/.mp3/.m4a/.ogg/.opus). 1–5 min recommended for KNN-VC.",
-    )
+    voice_add.add_argument("--samples", required=True, help="Directory of audio samples")
     voice_add.add_argument(
         "--method",
-        choices=METHODS,
-        default=METHOD_KNNVC,
-        help="knn-vc = zero-shot, no training; rvc = full training (highest quality, slow)",
+        choices=("knn-vc", "rvc"),
+        default="knn-vc",
+        help="knn-vc = zero-shot, no training; rvc = full training",
     )
-    voice_add.add_argument("--accent", default="", help="Free-form accent tag, e.g. 'en-US-southern'")
+    voice_add.add_argument("--accent", default="", help="Free-form accent tag")
     voice_add.add_argument("--notes", default="")
     voice_add.add_argument("--overwrite", action="store_true")
     voice_add.set_defaults(func=_voice_add_command)
 
-    voice_rm = voice_sub.add_parser("remove", help="Remove a voice from the library")
+    voice_rm = voice_sub.add_parser("remove", help="Remove a voice")
     voice_rm.add_argument("name")
     voice_rm.set_defaults(func=_voice_remove_command)
 
@@ -151,7 +209,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    configure_logging(level=getattr(args, "log_level", None))
+    log = get_logger("rtpfb.cli")
+    try:
+        return args.func(args)
+    except HealthCheckFailed as exc:
+        log.error(str(exc))
+        return 2
+    except RTPFBError as exc:
+        log.error("%s: %s", type(exc).__name__, exc)
+        return 1
+    except KeyboardInterrupt:
+        log.info("interrupted")
+        return 130
 
 
 if __name__ == "__main__":

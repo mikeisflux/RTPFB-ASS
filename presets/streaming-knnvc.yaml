@@ -1,0 +1,24 @@
+# Streaming preset: face swap + KNN-VC voice cloning + virtual cam/mic out.
+# Usage:
+#   rtpfb run --preset presets/streaming-knnvc.yaml --target ./assets/face.png --voice-model alice
+
+camera_index: 0
+width: 1280
+height: 720
+fps: 30
+
+swap_model: inswapper_128.onnx
+
+enable_pose: true
+enable_voice: true
+enable_lipsync: false   # turn on once wav2lip_gan.pth is in models/
+enable_body: false
+enable_stabilize: true
+
+output_virtual_camera: true
+output_virtual_mic: true
+
+audio_blocksize: 256
+voice_backend: auto
+voice_pitch_shift: 0.0
+voice_crossfade_samples: 64
